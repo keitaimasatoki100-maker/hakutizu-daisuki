@@ -13,264 +13,616 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <!-- Canvas Confetti -->
   <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+  <!-- Firebase App (Compat) and Firestore/Auth SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <!-- Google Fonts (Noto Sans JP) -->
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght=300;400;500;700;900&display=swap" rel="stylesheet">
   <style>
-    body {
-      font-family: 'Noto Sans JP', sans-serif;
-    }
-    .svg-map path, .svg-map polygon {
-      transition: fill 0.2s ease, stroke 0.2s ease, transform 0.1s ease;
-      cursor: pointer;
-    }
-    .svg-map g.prefecture:hover path, .svg-map g.prefecture:hover polygon {
-      filter: brightness(0.95);
-    }
-    /* 都道府県の境界線を黒色で目立つように設定 */
-    .svg-map g.prefecture {
-      stroke: #000000 !important;
-      stroke-width: 1.5px !important;
-    }
-    /* 選択中の都道府県は赤色で強調表示する */
-    .svg-map g.prefecture[stroke="#ff4444"] {
-      stroke: #ff4444 !important;
-      stroke-width: 3.5px !important;
-    }
-    /* ふりがな(ルビ)を黒色にして目立たせるスタイル調整 */
-    ruby {
-      ruby-position: over;
-    }
-    rt {
-      font-size: 0.55em;
-      color: #000000; /* 黒色に設定 */
-      font-weight: bold; /* より見やすく太字に設定 */
-      letter-spacing: normal;
-      user-select: none;
-      padding-bottom: 0.1em;
-    }
+    body { font-family: 'Noto Sans JP', sans-serif; }
+    .svg-map path, .svg-map polygon { transition: fill 0.2s ease, stroke 0.2s ease, transform 0.1s ease; cursor: pointer; }
+    .svg-map g.prefecture:hover path, .svg-map g.prefecture:hover polygon { filter: brightness(0.95); }
+    .svg-map g.prefecture { stroke: #000000 !important; stroke-width: 1.5px !important; }
+    .svg-map g.prefecture[stroke="#ff4444"] { stroke: #ff4444 !important; stroke-width: 3.5px !important; }
+    ruby { ruby-position: over; }
+    rt { font-size: 0.55em; color: #000000; font-weight: bold; letter-spacing: normal; user-select: none; padding-bottom: 0.1em; }
+    .btn-region-hokkaido_tohoku { background-color: #e0f2fe !important; color: #0369a1 !important; }
+    .btn-region-hokkaido_tohoku:hover { background-color: #bae6fd !important; }
+    .btn-region-kanto { background-color: #ffedd5 !important; color: #c2410c !important; }
+    .btn-region-kanto:hover { background-color: #fed7aa !important; }
+    .btn-region-chubu { background-color: #ecfccb !important; color: #3f6212 !important; }
+    .btn-region-chubu:hover { background-color: #d9f99d !important; }
+    .btn-region-kinki { background-color: #f3e8ff !important; color: #7c3aed !important; }
+    .btn-region-kinki:hover { background-color: #e9d5ff !important; }
+    .btn-region-chugoku { background-color: #fce7f3 !important; color: #be185d !important; }
+    .btn-region-chugoku:hover { background-color: #fbcfe8 !important; }
+    .btn-region-shikoku { background-color: #ccfbf1 !important; color: #0f766e !important; }
+    .btn-region-shikoku:hover { background-color: #99f6e4 !important; }
+    .btn-region-kyushu_okinawa { background-color: #dbeafe !important; color: #1d4ed8 !important; }
+    .btn-region-kyushu_okinawa:hover { background-color: #bfdbfe !important; }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col justify-between">
-  <div id="root" class="flex-1 flex flex-col justify-between"></div>
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+  <div id="root" class="flex-1 flex flex-col"></div>
 
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
 
-    // ローカルストレージに安全にアクセスするためのヘルパー (iFrame等のサンドボックスエラー対策)
     const safeGetLocalStorage = (key, fallback = "0") => {
-      try {
-        return localStorage.getItem(key) || fallback;
-      } catch (e) {
-        return fallback;
-      }
+      try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; }
     };
 
     const safeSetLocalStorage = (key, value) => {
-      try {
-        localStorage.setItem(key, value);
-      } catch (e) {
-        // セキュリティエラー時はサイレントにスルー
-      }
+      try { localStorage.setItem(key, value); } catch (e) {}
     };
 
-    // 47都道府県のデータセット（ルビ、およびズームクイズ用特産品・名所ヒント付き、都道県名語尾完備）
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'japan-map-quiz-default';
+    const defaultFirebaseConfig = {
+      apiKey: "",
+      authDomain: "default-app-id.firebaseapp.com",
+      projectId: "default-app-id",
+      storageBucket: "default-app-id.appspot.com",
+      messagingSenderId: "1234567890",
+      appId: "1:1234567890:web:1234567890"
+    };
+
+    const firebaseConfig = typeof __firebase_config !== 'undefined' 
+      ? (typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config)
+      : defaultFirebaseConfig;
+
+    let auth = null;
+    let db = null;
+    let firebaseAvailable = false;
+
+    try {
+      if (typeof firebase !== 'undefined' && firebase.apps) {
+        if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
+        auth = firebase.auth();
+        db = firebase.firestore();
+        firebaseAvailable = true;
+      }
+    } catch (e) {
+      console.warn("Firebase failed to initialize. Falling back to LocalStorage.", e);
+    }
+
     const PREFECTURE_DATA = {
       1: { code: "1", name: "北海道", ruby: "ほっかいどう", english: "Hokkaido", capital: "札幌市", capitalRuby: "さっぽろし", region: "hokkaido", regionName: "北海道", regionRuby: "ほっかいどう", specialties: (<React.Fragment><ruby>海鮮丼<rt>かいせんどん</rt></ruby>、ジンギスカン、<ruby>夕張<rt>ゆうばり</rt></ruby>メロン</React.Fragment>) },
       2: { code: "2", name: "青森県", ruby: "あおもりけん", english: "Aomori", capital: "青森市", capitalRuby: "あおもりし", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment><ruby>リンゴ<rt>りんご</rt></ruby>、<ruby>大間<rt>おおま</rt></ruby>のマグロ、ねぶた<ruby>祭<rt>まつ</rt></ruby>り</React.Fragment>) },
       3: { code: "3", name: "岩手県", ruby: "いわてけん", english: "Iwate", capital: "盛岡市", capitalRuby: "もりおかし", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment><ruby>盛岡冷麺<rt>もりおかれいめん</rt></ruby>、わんこそば、<ruby>南部鉄器<rt>なんぶてっき</rt></ruby></React.Fragment>) },
-      4: { code: "4", name: "宮城県", ruby: "みやぎけん", english: "Miyagi", capital: "仙台市", capitalRuby: "せんだいし", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment><ruby>牛<rt>ぎゅう</rt></ruby>タン、ずんだ<ruby>餅<rt>もち</rt></ruby>、<ruby>松島<rt>まつしま</rt></ruby></React.Fragment>) },
+      4: { code: "4", name: "宮城県", ruby: "みやぎけん", english: "Miyagi", capital: "仙台市", capitalRuby: "ぜんだいし", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment><ruby>牛<rt>ぎゅう</rt></ruby>タン、ずんだ<ruby>餅<rt>もち</rt></ruby>、<ruby>松島<rt>まつしま</rt></ruby></React.Fragment>) },
       5: { code: "5", name: "秋田県", ruby: "あきたけん", english: "Akita", capital: "秋田市", capitalRuby: "あきたし", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment>きりたんぽ、<ruby>稲庭<rt>いなにわ</rt></ruby>うどん、なまはげ</React.Fragment>) },
-      6: { code: "6", name: "山形県", ruby: "やまがたけん", english: "Yamagata", capital: "山形市", capitalRuby: "やまがたし", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment>さくらんぼ、<ruby>米沢牛<rt>よねざわぎゅう</rt></ruby>、<ruby>蔵王<rt>ざおう</rt></ruby>の<ruby>樹氷<rt>じゅひょう</rt></ruby></React.Fragment>) },
-      7: { code: "7", name: "福島県", ruby: "ふくしまけん", english: "Fukushima", capital: "福島市", capitalRuby: "ふくしまし", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment><ruby>喜多方<rt>きたかた</rt></ruby>ラーメン、<ruby>桃<rt>もも</rt></ruby>、<ruby>会津若松<rt>あいづわかまつ</rt></ruby></React.Fragment>) },
-      8: { code: "8", name: "茨城県", ruby: "いばらきけん", english: "Ibaraki", capital: "水戸市", capitalRuby: "みとし", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>納豆<rt>なっとう</rt></ruby>、<ruby>国営<rt>こくえい</rt></ruby>ひたち<ruby>海浜公園<rt>かいひんこうえん</rt></ruby></React.Fragment>) },
-      9: { code: "9", name: "栃木県", ruby: "とちぎけん", english: "Tochigi", capital: "宇つ宮市", capitalRuby: "うつのみやし", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>宇都宮<rt>うつのみや</rt></ruby>ギョーザ、<ruby>日光東照宮<rt>にっこうとうしょうぐう</rt></ruby></React.Fragment>) },
-      10: { code: "10", name: "群馬県", ruby: "ぐんまけん", english: "Gunma", capital: "前橋市", capitalRuby: "まえばしし", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>草津温泉<rt>くさつおんせん</rt></ruby>、<ruby>下仁田<rt>しもにた</rt></ruby>ねぎ、<ruby>尾瀬<rt>おぜ</rt></ruby></React.Fragment>) },
-      11: { code: "11", name: "埼玉県", ruby: "さいたまけん", english: "Saitama", capital: "さいたま市", capitalRuby: "さいたまし", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>草加<rt>そうか</rt></ruby>せんべい、<ruby>川越<rt>かわごえ</rt></ruby>の<ruby>時<rt>とき</rt></ruby>の<ruby>鐘<rt>かね</rt></ruby>、<ruby>長瀞<rt>ながとろ</rt></ruby></React.Fragment>) },
-      12: { code: "12", name: "千葉県", ruby: "ちばけん", english: "Chiba", capital: "千葉市", capitalRuby: "ちばし", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>落花生<rt>らっかせい</rt></ruby>、ディズニーリゾート、<ruby>成田空港<rt>なりたくうこう</rt></ruby></React.Fragment>) },
-      13: { code: "13", name: "東京都", ruby: "とうきょうと", english: "Tokyo", capital: "新宿区", capitalRuby: "しんじゅくく", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>東京<rt>とうきょう</rt></ruby>タワー、<ruby>浅草寺<rt>せんそうじ</rt></ruby>、もんじゃ<ruby>焼き<rt>やき</rt></ruby></React.Fragment>) },
-      14: { code: "14", name: "神奈川県", ruby: "かながわけん", english: "Kanagawa", capital: "横浜市", capitalRuby: "よこはまし", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>横浜中華街<rt>よこはまちゅうかがい</rt></ruby>、<ruby>鎌倉<rt>かまくら</rt></ruby>の<ruby>大仏<rt>だいぶつ</rt></ruby>、<ruby>箱根温泉<rt>はこねおんせん</rt></ruby></React.Fragment>) },
-      15: { code: "15", name: "新潟県", ruby: "niigata-ken", english: "Niigata", capital: "新潟市", capitalRuby: "にいがたし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment>コシヒカリ、<ruby>日本酒<rt>にほんしゅ</rt></ruby>、<ruby>佐渡金山<rt>さどきんざん</rt></ruby></React.Fragment>) },
-      16: { code: "16", name: "富山県", ruby: "とやまけん", english: "Toyama", capital: "富山市", capitalRuby: "ちゅうぶ", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment>ホタルイカ、<ruby>立山黒部<rt>たてやまくろべ</rt></ruby>アルペンルート</React.Fragment>) },
-      17: { code: "17", name: "石川県", ruby: "いしかわけん", english: "Ishikawa", capital: "金沢市", capitalRuby: "かなざわし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>兼六園<rt>けんろくえん</rt></ruby>、<ruby>輪島塗<rt>わじまぬり</rt></ruby>、<ruby>金沢<rt>かなざわ</rt></ruby>カレー</React.Fragment>) },
-      18: { code: "18", name: "福井県", ruby: "ふくいけん", english: "Fukui", capital: "福井市", capitalRuby: "ふくいし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>越前<rt>えちぜん</rt></ruby>がに、<ruby>恐竜博物館<rt>きょうりゅうはくぶつかん</rt></ruby></React.Fragment>) },
-      19: { code: "19", name: "山梨県", ruby: "やまなしけん", english: "Yamanashi", capital: "甲府市", capitalRuby: "こうふし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>富士山<rt>ふじさん</rt></ruby>、ほうとう、<ruby>甲州<rt>こうしゅう</rt></ruby>ワイン</React.Fragment>) },
-      20: { code: "20", name: "長野県", ruby: "ながのけん", english: "Nagano", capital: "長野市", capitalRuby: "ながのし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>信州<rt>しんしゅう</rt></ruby>そば、<ruby>善光寺<rt>ぜんこうじ</rt></ruby>、<ruby>軽井沢<rt>かるいざわ</rt></ruby></React.Fragment>) },
-      21: { code: "21", name: "岐阜県", ruby: "ぎふけん", english: "Gifu", capital: "岐阜市", capitalRuby: "ぎふし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>白川郷<rt>しらかわごう</rt></ruby>の<ruby>合掌造り<rt>がっしょうづくり</rt></ruby>、<ruby>飛騨牛<rt>ひだぎゅう</rt></ruby></React.Fragment>) },
-      22: { code: "22", name: "静岡県", ruby: "しずおかけん", english: "Shizuoka", capital: "静岡市", capitalRuby: "しずおかし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>お茶<rt>ちゃ</rt></ruby>、<ruby>富士山<rt>ふじさん</rt></ruby>、うなぎパイ</React.Fragment>) },
-      23: { code: "23", name: "愛知県", ruby: "あいちけん", english: "Aichi", capital: "名古屋市", capitalRuby: "なごやし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>名古屋城<rt>なごやじょう</rt></ruby>、ひつまぶし、<ruby>味噌<rt>みそ</rt></ruby>カツ</React.Fragment>) },
-      24: { code: "24", name: "三重県", ruby: "みえけん", english: "Mie", capital: "津市", capitalRuby: "つし", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>伊勢神宮<rt>いせじんぐう</rt></ruby>、<ruby>松阪牛<rt>まつさかぎゅう</rt></ruby>、<ruby>伊勢<rt>いせ</rt></ruby>えび</React.Fragment>) },
-      25: { code: "25", name: "滋賀県", ruby: "しがけん", english: "Shiga", capital: "大津市", capitalRuby: "おおつし", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>琵琶湖<rt>びわこ</rt></ruby>、<ruby>彦根城<rt>ひこねじょう</rt></ruby>、<ruby>近江牛<rt>おうみぎゅう</rt></ruby></React.Fragment>) },
-      26: { code: "26", name: "京都府", ruby: "きょうとふ", english: "Kyoto", capital: "京都市", capitalRuby: "きょうとし", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>金閣寺<rt>きんかくじ</rt></ruby>、<ruby>清水寺<rt>きよみずてら</rt></ruby>、<ruby>宇治抹茶<rt>うじまっちゃ</rt></ruby></React.Fragment>) },
-      27: { code: "27", name: "大阪府", ruby: "おおさかふ", english: "Osaka", capital: "大阪市", capitalRuby: "おおさかし", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>大阪城<rt>おおさかじょう</rt></ruby>、たこ<ruby>焼き<rt>やき</rt></ruby>、<ruby>道頓堀<rt>どうとんぼり</rt></ruby></React.Fragment>) },
-      28: { code: "28", name: "兵庫県", ruby: "ひょうごけん", english: "Hyogo", capital: "神戸市", capitalRuby: "こうべし", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>姫路城<rt>ひめじじょう</rt></ruby>、<ruby>神戸牛<rt>こうべぎゅう</rt></ruby>、<ruby>有馬温泉<rt>ありまおんせん</rt></ruby></React.Fragment>) },
-      29: { code: "29", name: "奈良県", ruby: "ならけん", english: "Nara", capital: "奈良市", capitalRuby: "ならし", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>東大寺<rt>とうだいじ</rt></ruby>の<ruby>大仏<rt>だいぶつ</rt></ruby>、<ruby>奈良公園<rt>ならこうえん</rt></ruby>のシカ</React.Fragment>) },
-      30: { code: "30", name: "和歌山県", ruby: "わかやまけん", english: "Wakayama", capital: "和歌山市", capitalRuby: "わかやまし", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>高野山<rt>こうやさん</rt></ruby>、<ruby>紀州梅干し<rt>きしゅううめぼし</rt></ruby>、パンダ</React.Fragment>) },
-      31: { code: "31", name: "鳥取県", ruby: "とっとりけん", english: "Tottori", capital: "鳥取市", capitalRuby: "とっとりし", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>鳥取砂丘<rt>とっとりさきゅう</rt></ruby>、<ruby>二十世紀梨<rt>にじっせいきなし</rt></ruby></React.Fragment>) },
-      32: { code: "32", name: "島根県", ruby: "しまねけん", english: "Shimane", capital: "松江市", capitalRuby: "まつえし", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>出雲大社<rt>いずもおおやしろ</rt></ruby>、<ruby>宍道湖<rt>しんじこ</rt></ruby>の<ruby>夕日<rt>ゆうひ</rt></ruby></React.Fragment>) },
-      33: { code: "33", name: "岡山県", ruby: "おかやまけん", english: "Okayama", capital: "岡山市", capitalRuby: "おかやまし", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>倉敷美観地区<rt>くらしきびかんちく</rt></ruby>、きびだんご、<ruby>桃<rt>もも</rt></ruby></React.Fragment>) },
-      34: { code: "34", name: "広島県", ruby: "ひろしまけん", english: "Hiroshima", capital: "広島市", capitalRuby: "ひろしまし", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>厳島神社<rt>いつくしまじんじゃ</rt></ruby>の<ruby>鳥居<rt>とりい</rt></ruby>、<ruby>原爆<rt>げんばく</rt></ruby>ドーム、お<ruby>好み焼き<rt>このみやき</rt></ruby></React.Fragment>) },
-      35: { code: "35", name: "山口県", ruby: "やまぐちけん", english: "Yamaguchi", capital: "山口市", capitalRuby: "やまぐちし", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment>フグ<ruby>料理<rt>りょうり</rt></ruby>、<ruby>秋吉台<rt>あきよしだい</rt></ruby>、<ruby>角島大橋<rt>つのしまおおはし</rt></ruby></React.Fragment>) },
-      36: { code: "36", name: "徳島県", ruby: "とくしまけん", english: "Tokushima", capital: "徳島市", capitalRuby: "とくしまし", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>阿波踊り<rt>あわおどり</rt></ruby>、<ruby>鳴門<rt>なると</rt></ruby>の<ruby>渦潮<rt>うずしお</rt></ruby></React.Fragment>) },
-      37: { code: "37", name: "香川県", ruby: "かがわけん", english: "Kagawa", capital: "高松市", capitalRuby: "たかまつし", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>讃岐<rt>さぬき</rt></ruby>うどん、<ruby>小豆島<rt>しょうどしま</rt></ruby>のオリーブ</React.Fragment>) },
-      38: { code: "38", name: "愛媛県", ruby: "えひめけん", english: "Ehime", capital: "松山市", capitalRuby: "まつやまし", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>道後温泉<rt>どうごおんせん</rt></ruby>、みかん、<ruby>今治<rt>いまばり</rt></ruby>タオル</React.Fragment>) },
-      39: { code: "39", name: "高知県", ruby: "こうちけん", english: "Kochi", capital: "高知市", capitalRuby: "こうちし", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>桂浜<rt>かつらはま</rt></ruby>の<ruby>坂本龍馬像<rt>さかもとりょうまぞう</rt></ruby>、カツオのたたき</React.Fragment>) },
-      40: { code: "40", name: "福岡県", ruby: "ふくおかけん", english: "Fukuoka", capital: "福岡市", capitalRuby: "ふくおかし", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>太宰府天満宮<rt>だざいふてんまんぐう</rt></ruby>、<ruby>博多<rt>はかた</rt></ruby>ラーメン、<ruby>明太子<rt>めんたいこ</rt></ruby></React.Fragment>) },
-      41: { code: "41", name: "佐賀県", ruby: "さがけん", english: "Saga", capital: "佐賀市", capitalRuby: "さがし", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>有田焼<rt>ありたやき</rt></ruby>、<ruby>呼子<rt>よぶこ</rt></ruby>のイカ、<ruby>佐賀牛<rt>さがぎゅう</rt></ruby></React.Fragment>) },
-      42: { code: "42", name: "長崎県", ruby: "ながさきけん", english: "Nagasaki", capital: "長崎市", capitalRuby: "ながさきし", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment>ハウステンボス、<ruby>平和公園<rt>へいわこうえん</rt></ruby>、カステラ</React.Fragment>) },
-      43: { code: "43", name: "熊本県", ruby: "くまもとけん", english: "Kumamoto", capital: "熊本市", capitalRuby: "くまもとし", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>熊本城<rt>くまもとじょう</rt></ruby>、<ruby>阿蘇山<rt>あそさん</rt></ruby>、<ruby>馬刺し<rt>ばさし</rt></ruby></React.Fragment>) },
-      44: { code: "44", name: "大分県", ruby: "おおいたけん", english: "Oita", capital: "大分市", capitalRuby: "おおいたし", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>別府温泉<rt>べっぷおんせん</rt></ruby>の<ruby>地獄<rt>じごく</rt></ruby>めぐり、とり<ruby>天<rt>てん</rt></ruby></React.Fragment>) },
-      45: { code: "45", name: "宮崎県", ruby: "みやざきけん", english: "Miyazaki", capital: "宮崎市", capitalRuby: "みやざきし", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>高千穂峡<rt>たかちほきょう</rt></ruby>、チキン<ruby>南蛮<rt>なんばん</rt></ruby>、マンゴー</React.Fragment>) },
-      46: { code: "46", name: "鹿児島県", ruby: "kago", english: "Kagoshima", capital: "鹿児島市", capitalRuby: "かごしまし", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>桜島<rt>さくらじま</rt></ruby>、<ruby>屋久島<rt>やくしま</rt></ruby>の<ruby>縄文杉<rt>じょうもんすぎ</rt></ruby>、<ruby>黒豚<rt>くろぶた</rt></ruby></React.Fragment>) },
-      47: { code: "47", name: "沖縄県", ruby: "おきなわけん", english: "Okinawa", capital: "那覇市", capitalRuby: "なはし", region: "okinawa", regionName: "沖縄", regionRuby: "おきなわ", specialties: (<React.Fragment><ruby>首里城<rt>しゅりじょう</rt></ruby>、<ruby>美ら海水族館<rt>ちゅらうみすいぞくかん</rt></ruby>、ゴーヤチャンプルー</React.Fragment>) }
+      6: { code: "6", name: "山形県", ruby: "やまがたけん", english: "Yamagata", capital: "山形市", capitalRuby: "yamagatashi", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment>さくらんぼ、<ruby>米沢牛<rt>よねざわぎゅう</rt></ruby>、<ruby>蔵王<rt>ざおう</rt></ruby>の<ruby>樹氷<rt>じゅひょう</rt></ruby></React.Fragment>) },
+      7: { code: "7", name: "福島県", ruby: "ふくしまけん", english: "Fukushima", capital: "福島市", capitalRuby: "fukushimashi", region: "tohoku", regionName: "東北", regionRuby: "とうほく", specialties: (<React.Fragment><ruby>喜多方<rt>きたかた</rt></ruby>ラーメン、<ruby>桃<rt>もも</rt></ruby>、<ruby>会津若松<rt>あいづわかまつ</rt></ruby></React.Fragment>) },
+      8: { code: "8", name: "茨城県", ruby: "いばらきけん", english: "Ibaraki", capital: "水戸市", capitalRuby: "mitoshi", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>納豆<rt>なっとう</rt></ruby>、<ruby>国営<rt>こくえい</rt></ruby>ひたち<ruby>海浜公園<rt>かいひんこうえん</rt></ruby></React.Fragment>) },
+      9: { code: "9", name: "栃木県", ruby: "とちぎけん", english: "Tochigi", capital: "宇つ宮市", capitalRuby: "utsunomiyashi", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>宇都宮<rt>うつのみや</rt></ruby>ギョーザ、<ruby>日光東照宮<rt>にっこうとうしょうぐう</rt></ruby></React.Fragment>) },
+      10: { code: "10", name: "群馬県", ruby: "ぐんまけん", english: "Gunma", capital: "前橋市", capitalRuby: "maebashishi", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>草津温泉<rt>くさつおんせん</rt></ruby>、<ruby>下仁田<rt>しもにた</rt></ruby>ねぎ、<ruby>尾瀬<rt>おぜ</rt></ruby></React.Fragment>) },
+      11: { code: "11", name: "埼玉県", ruby: "さいたまけん", english: "Saitama", capital: "さいたま市", capitalRuby: "saitamashi", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>草加<rt>そうか</rt></ruby>せんべい、<ruby>川越<rt>かわごえ</rt></ruby>の<ruby>時<rt>とき</rt></ruby>の<ruby>鐘<rt>かね</rt></ruby>、<ruby>長瀞<rt>ながとろ</rt></ruby></React.Fragment>) },
+      12: { code: "12", name: "千葉県", ruby: "ちばけん", english: "Chiba", capital: "千葉市", capitalRuby: "chibashi", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>落花生<rt>らっかせい</rt></ruby>、ディズニーリゾート、<ruby>成田空港<rt>なりたくうこう</rt></ruby></React.Fragment>) },
+      13: { code: "13", name: "東京都", ruby: "とうきょうと", english: "Tokyo", capital: "新宿区", capitalRuby: "shinjukuku", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>東京<rt>とうきょう</rt></ruby>タワー、<ruby>浅草寺<rt>せんそうじ</rt></ruby>、もんじゃ<ruby>焼き<rt>やき</rt></ruby></React.Fragment>) },
+      14: { code: "14", name: "神奈川県", ruby: "かながわけん", english: "Kanagawa", capital: "横浜市", capitalRuby: "yokohamashi", region: "kanto", regionName: "関東", regionRuby: "かんとう", specialties: (<React.Fragment><ruby>横浜中華街<rt>よこはまちゅうかがい</rt></ruby>、<ruby>鎌倉<rt>かまくら</rt></ruby>の<ruby>大仏<rt>だいぶつ</rt></ruby>、<ruby>箱根温泉<rt>箱根温泉</rt></ruby></React.Fragment>) },
+      15: { code: "15", name: "新潟県", ruby: "にいがたけん", english: "Niigata", capital: "新潟市", capitalRuby: "にいがたし", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment>コシヒカリ、<ruby>日本酒<rt>にほんしゅ</rt></ruby>、<ruby>佐渡金山<rt>さどきんざん</rt></ruby></React.Fragment>) },
+      16: { code: "16", name: "富山県", ruby: "とやまけん", english: "Toyama", capital: "富山市", capitalRuby: "toyamashi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment>ホタルイカ、<ruby>立山黒部<rt>たてやまくろべ</rt></ruby>アルペンルート</React.Fragment>) },
+      17: { code: "17", name: "石川県", ruby: "いしかわけん", english: "Ishikawa", capital: "金沢市", capitalRuby: "kanazawashi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>兼六園<rt>けんろくえん</rt></ruby>、<ruby>輪島塗<rt>わじまぬり</rt></ruby>、<ruby>金沢<rt>かなざわ</rt></ruby>カレー</React.Fragment>) },
+      18: { code: "18", name: "福井県", ruby: "ふくいけん", english: "Fukui", capital: "福井市", capitalRuby: "fukuishi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>越前<rt>えちぜん</rt></ruby>がに、<ruby>恐竜博物館<rt>きょうりゅうはくぶつかん</rt></ruby></React.Fragment>) },
+      19: { code: "19", name: "山梨県", ruby: "やまなしけん", english: "Yamanashi", capital: "甲府市", capitalRuby: "kofushi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>富士山<rt>ふじさん</rt></ruby>、ほうとう、<ruby>甲州<rt>こうしゅう</rt></ruby>ワイン</React.Fragment>) },
+      20: { code: "20", name: "長野県", ruby: "ながのけん", english: "Nagano", capital: "長野市", capitalRuby: "naganoshi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>信州<rt>しんしゅう</rt></ruby>そば、<ruby>善光寺<rt>ぜんこうじ</rt></ruby>、<ruby>軽井沢<rt>かるいざわ</rt></ruby></React.Fragment>) },
+      21: { code: "21", name: "岐阜県", ruby: "ぎふけん", english: "Gifu", capital: "岐阜市", capitalRuby: "gifushi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>白川郷<rt>しらかわごう</rt></ruby>の<ruby>合掌造り<rt>がっしょうづくり</rt></ruby>、<ruby>飛騨牛<rt>ひだぎゅう</rt></ruby></React.Fragment>) },
+      22: { code: "22", name: "静岡県", ruby: "しずおかけん", english: "Shizuoka", capital: "静岡市", capitalRuby: "shizuokashi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>お茶<rt>ちゃ</rt></ruby>、<ruby>富士山<rt>ふじさん</rt></ruby>、うなぎパイ</React.Fragment>) },
+      23: { code: "23", name: "愛知県", ruby: "あいちけん", english: "Aichi", capital: "名古屋市", capitalRuby: "nagoyashi", region: "chubu", regionName: "中部", regionRuby: "ちゅうぶ", specialties: (<React.Fragment><ruby>名古屋城<rt>なごやじょう</rt></ruby>、ひつまぶし、<ruby>味噌<rt>みそ</rt></ruby>カツ</React.Fragment>) },
+      24: { code: "24", name: "三重県", ruby: "みえけん", english: "Mie", capital: "津市", capitalRuby: "tsushi", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>伊勢神宮<rt>いせじんぐう</rt></ruby>、<ruby>松阪牛<rt>まつさかぎゅう</rt></ruby>、<ruby>伊勢<rt>いせ</rt></ruby>えび</React.Fragment>) },
+      25: { code: "25", name: "滋賀県", ruby: "しがけん", english: "Shiga", capital: "大津市", capitalRuby: "otsushi", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>琵琶湖<rt>びわこ</rt></ruby>、<ruby>彦根城<rt>ひこねじょう</rt></ruby>、<ruby>近江牛<rt>おうみぎゅう</rt></ruby></React.Fragment>) },
+      26: { code: "26", name: "京都府", ruby: "きょうとふ", english: "Kyoto", capital: "京都市", capitalRuby: "kyotoshi", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>金閣寺<rt>きんかくじ</rt></ruby>、<ruby>清水寺<rt>しみずでら</rt></ruby>、<ruby>宇治抹茶<rt>うじまっちゃ</rt></ruby></React.Fragment>) },
+      27: { code: "27", name: "大阪府", ruby: "おおさかふ", english: "Osaka", capital: "大阪市", capitalRuby: "osakashi", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>大阪城<rt>おおさかじょう</rt></ruby>、たこ<ruby>焼き<rt>yaki</rt></ruby>、<ruby>道頓堀<rt>どうとんぼり</rt></ruby></React.Fragment>) },
+      28: { code: "28", name: "兵庫県", ruby: "ひょうごけん", english: "Hyogo", capital: "神戸市", capitalRuby: "kobey_ruby", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>姫路城<rt>ひめじじょう</rt></ruby>、<ruby>神戸牛<rt>こうべぎゅう</rt></ruby>、<ruby>有馬温泉<rt>ありまおんせん</rt></ruby></React.Fragment>) },
+      29: { code: "29", name: "奈良県", ruby: "ならけん", english: "Nara", capital: "奈良市", capitalRuby: "narashi", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>東大寺<rt>とうだいじ</rt></ruby>の<ruby>大仏<rt>だいぶつ</rt></ruby>、<ruby>奈良公園<rt>ならこうえん</rt></ruby>のシカ</React.Fragment>) },
+      30: { code: "30", name: "和歌山県", ruby: "わかやまけん", english: "Wakayama", capital: "和歌山市", capitalRuby: "wakayamashi", region: "kinki", regionName: "近畿", regionRuby: "きんき", specialties: (<React.Fragment><ruby>高野山<rt>こうやさん</rt></ruby>、<ruby>紀州梅干し<rt>きしゅううめぼし</rt></ruby>、パンダ</React.Fragment>) },
+      31: { code: "31", name: "鳥取県", ruby: "とっとりけん", english: "Tottori", capital: "鳥取市", capitalRuby: "tottorishi", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>鳥取砂丘<rt>とっとりさきゅう</rt></ruby>、<ruby>二十世紀梨<rt>にじっせいきなし</rt></ruby></React.Fragment>) },
+      32: { code: "32", name: "島根県", ruby: "しまねけん", english: "Shimane", capital: "松江市", capitalRuby: "matsueshi", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>出雲大社<rt>いずもおおやしろ</rt></ruby>、<ruby>宍道湖<rt>しんじこ</rt></ruby>の<ruby>夕日<rt>ゆうひ</rt></ruby></React.Fragment>) },
+      33: { code: "33", name: "岡山県", ruby: "おかやまけん", english: "Okayama", capital: "岡山市", capitalRuby: "okayamashi", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>倉敷美観地区<rt>くらしきびかんちく</rt></ruby>、きびだんご、<ruby>桃<rt>桃</rt></ruby></React.Fragment>) },
+      34: { code: "34", name: "広島県", ruby: "ひろしまけん", english: "Hiroshima", capital: "広島市", capitalRuby: "hiroshimashi", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment><ruby>厳島神社<rt>いつくしまじんじゃ</rt></ruby>の<ruby>鳥居<rt>とりい</rt></ruby>、<ruby>原爆<rt>genbaku_ruby</rt></ruby>ドーム、お<ruby>好み焼き<rt>おこのみやき</rt></ruby></React.Fragment>) },
+      35: { code: "35", name: "山口県", ruby: "yamaguchiken_ruby", english: "Yamaguchi", capital: "山口市", capitalRuby: "yamaguchishi", region: "chugoku", regionName: "中国", regionRuby: "ちゅうごく", specialties: (<React.Fragment>フグ<ruby>料理<rt>りょうり</rt></ruby>、<ruby>秋吉台<rt>あきよしだい</rt></ruby>、<ruby>角島大橋<rt>つのしまおおかぜ</rt></ruby></React.Fragment>) },
+      36: { code: "36", name: "徳島県", ruby: "tokushimaken_ruby", english: "Tokushima", capital: "徳島市", capitalRuby: "tokushimashi", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>阿波踊り<rt>awaodori_ruby</rt></ruby>、<ruby>鳴門<rt>鳴門</rt></ruby>の<ruby>渦潮<rt>渦潮</rt></ruby></React.Fragment>) },
+      37: { code: "37", name: "香川県", ruby: "kagawaken_ruby", english: "Kagawa", capital: "高松市", capitalRuby: "takamatsushi", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>讃岐<rt>讃岐</rt></ruby>うどん、<ruby>小豆島<rt>しょうどしま</rt></ruby>のオリーブ</React.Fragment>) },
+      38: { code: "38", name: "愛媛県", ruby: "ehimeken_ruby", english: "Ehime", capital: "松山市", capitalRuby: "matsuyamashi", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>道後温泉<rt>dougo_ruby</rt></ruby>、みかん、<ruby>今治<rt>imabari_ruby</rt></ruby>タオル</React.Fragment>) },
+      39: { code: "39", name: "高知県", ruby: "kochiken_ruby", english: "Kochi", capital: "高知市", capitalRuby: "kochishi", region: "shikoku", regionName: "四国", regionRuby: "しこく", specialties: (<React.Fragment><ruby>桂浜<rt>katsurahama_ruby</rt></ruby>の<ruby>坂本龍馬像<rt>坂本龍馬像</rt></ruby>、カツオのたたき</React.Fragment>) },
+      40: { code: "40", name: "福岡県", ruby: "fukuokaken_ruby", english: "Fukuoka", capital: "福岡市", capitalRuby: "fukuokashi", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>太宰府天満宮<rt>dazaifu_ruby</rt></ruby>、<ruby>博多<rt>博多</rt></ruby>ラーメン、<ruby>明太子<rt>明太子</rt></ruby></React.Fragment>) },
+      41: { code: "41", name: "佐賀県", ruby: "sagaken_ruby", english: "Saga", capital: "佐賀市", capitalRuby: "sagashi", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>有田焼<rt>aritayaki_ruby</rt></ruby>、<ruby>呼子<rt>呼子</rt></ruby>のイカ、<ruby>佐賀牛<rt>佐賀牛</rt></ruby></React.Fragment>) },
+      42: { code: "42", name: "長崎県", ruby: "nagasakiken_ruby", english: "Nagasaki", capital: "長崎市", capitalRuby: "nagasakishi", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment>ハウステンボス、<ruby>平和公園<rt>heiwakouen_ruby</rt></ruby>、カステラ</React.Fragment>) },
+      43: { code: "43", name: "熊本県", ruby: "kumamotoken_ruby", english: "Kumamoto", capital: "熊本市", capitalRuby: "kumamotoshi", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>熊本城<rt>kumamotojou_ruby</rt></ruby>、<ruby>阿蘇山<rt>阿蘇山</rt></ruby>、<ruby>馬刺し<rt>馬刺し</rt></ruby></React.Fragment>) },
+      44: { code: "44", name: "大分県", ruby: "oitaken_ruby", english: "Oita", capital: "大分市", capitalRuby: "oitashi", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>別府温泉<rt>別府温泉</rt></ruby>の<ruby>地獄<rt>地獄</rt></ruby>めぐり、とり<ruby>天<rt>てん</rt></ruby></React.Fragment>) },
+      45: { code: "45", name: "宮崎県", ruby: "miyazakiken_ruby", english: "Miyazaki", capital: "宮崎市", capitalRuby: "miyazakishi", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>高千穂峡<rt>高千穂峡</rt></ruby>、チキン<ruby>南蛮<rt>チキン南蛮</rt></ruby>、マンゴー</React.Fragment>) },
+      46: { code: "46", name: "鹿児島県", ruby: "kagoshimaken_ruby", english: "Kagoshima", capital: "鹿児島市", capitalRuby: "kagoshimashi", region: "kyushu", regionName: "九州", regionRuby: "きゅうしゅう", specialties: (<React.Fragment><ruby>桜島<rt>桜島</rt></ruby>、<ruby>屋久島<rt>屋久島</rt></ruby>の<ruby>縄文杉<rt>縄文杉</rt></ruby>、<ruby>黒豚<rt>黒豚</rt></ruby></React.Fragment>) },
+      47: { code: "47", name: "沖縄県", ruby: "okinawaken_ruby", english: "Okinawa", capital: "那覇市", capitalRuby: "nahashi", region: "okinawa", regionName: "沖縄", regionRuby: "おきなわ", specialties: (<React.Fragment><ruby>首里城<rt>首里城</rt></ruby>、<ruby>美ら海水族館<rt>美ら海水族館</rt></ruby>、ゴーヤチャンプルー</React.Fragment>) }
     };
 
     // はっきりとした高コントラストの地方別カラー定義
     const REGION_COLORS = {
-      hokkaido: { fill: "#38bdf8", hover: "#0ea5e9", light: "#0284c7" }, // スカイブルー
-      tohoku: { fill: "#4ade80", hover: "#22c55e", light: "#16a34a" }, // グリーン
-      kanto: { fill: "#fb923c", hover: "#f97316", light: "#ea580c" }, // オレンジ
-      chubu: { fill: "#cbd5e1", hover: "#94a3b8", light: "#475569" }, // グレー
-      kinki: { fill: "#c084fc", hover: "#a855f7", light: "#8b5cf6" }, // パープル
-      chugoku: { fill: "#f472b6", hover: "#ec4899", light: "#db2777" }, // ピンク
-      shikoku: { fill: "#2dd4bf", hover: "#14b8a6", light: "#0d9488" }, // ターコイズ
-      kyushu: { fill: "#60a5fa", hover: "#3b82f6", light: "#2563eb" }, // ブルー
-      okinawa: { fill: "#f43f5e", hover: "#e11d48", light: "#be123c" } // ローズ
+      hokkaido: { fill: "#38bdf8", hover: "#0ea5e9", light: "#0284c7" },
+      tohoku: { fill: "#4ade80", hover: "#22c55e", light: "#16a34a" },
+      kanto: { fill: "#fb923c", hover: "#f97316", light: "#ea580c" },
+      chubu: { fill: "#cbd5e1", hover: "#94a3b8", light: "#475569" },
+      kinki: { fill: "#c084fc", hover: "#a855f7", light: "#8b5cf6" },
+      chugoku: { fill: "#f472b6", hover: "#ec4899", light: "#db2777" },
+      shikoku: { fill: "#2dd4bf", hover: "#14b8a6", light: "#0d9488" },
+      kyushu: { fill: "#60a5fa", hover: "#3b82f6", light: "#2563eb" },
+      okinawa: { fill: "#f43f5e", hover: "#e11d48", light: "#be123c" }
     };
 
-    // 地方別結合グループ定義（自動拡大用ビューボックス座標付き。福島・和歌山見切れ解消版）
+    // 地方別結合グループ定義（自動拡大用ビューボックス座標付き）
     const REGION_GROUPS = {
-      hokkaido_tohoku: {
-        name: "北海道・東北",
-        ruby: "ほっかいどう・とうほく",
-        prefs: [1, 2, 3, 4, 5, 6, 7],
-        viewBox: "540 0 460 610" // y軸の高さを560から610へ拡張し、福島県南部の見切れを解消
-      },
-      kanto: {
-        name: "関東",
-        ruby: "かんとう",
-        prefs: [8, 9, 10, 11, 12, 13, 14],
-        viewBox: "530 530 200 220"
-      },
-      chubu: {
-        name: "中部",
-        ruby: "ちゅうぶ",
-        prefs: [15, 16, 17, 18, 19, 20, 21, 22, 23],
-        viewBox: "380 440 280 320"
-      },
-      kinki: {
-        name: "近畿",
-        ruby: "きんき",
-        prefs: [24, 25, 26, 27, 28, 29, 30],
-        viewBox: "320 615 180 210" // y軸の高さを180から210へ拡張し、和歌山県最南部の見切れを解消
-      },
-      chugoku: {
-        name: "中国",
-        ruby: "ちゅうごく",
-        prefs: [31, 32, 33, 34, 35],
-        viewBox: "150 590 240 180" // x軸とy軸の表示領域を完璧に再設定し、島根や山口、鳥取の見切れを完全解消
-      },
-      shikoku: {
-        name: "四国",
-        ruby: "しこく",
-        prefs: [36, 37, 38, 39],
-        viewBox: "220 710 200 150" // x軸とy軸の表示領域を完璧に再設定し、高知最南部や愛媛の佐田岬の見切れを完全解消
-      },
-      kyushu_okinawa: {
-        name: "九州・沖縄",
-        ruby: "きゅうしゅう・おきなわ",
-        prefs: [40, 41, 42, 43, 44, 45, 46, 47],
-        viewBox: "0 680 300 320"
-      }
+      hokkaido_tohoku: { name: "北海道・東北", ruby: "ほっかいどう・とうほく", prefs: [1, 2, 3, 4, 5, 6, 7], viewBox: "540 0 460 610" },
+      kanto: { name: "関東", ruby: "かんとう", prefs: [8, 9, 10, 11, 12, 13, 14], viewBox: "530 530 200 220" },
+      chubu: { name: "中部", ruby: "ちゅうぶ", prefs: [15, 16, 17, 18, 19, 20, 21, 22, 23], viewBox: "380 440 280 320" },
+      kinki: { name: "近畿", ruby: "きんき", prefs: [24, 25, 26, 27, 28, 29, 30], viewBox: "320 615 180 210" },
+      chugoku: { name: "中国", ruby: "ちゅうごく", prefs: [31, 32, 33, 34, 35], viewBox: "120 590 280 180" },
+      shikoku: { name: "四国", ruby: "しこく", prefs: [36, 37, 38, 39], viewBox: "180 710 240 150" },
+      kyushu_okinawa: { name: "九州・沖縄", ruby: "きゅうしゅう・おきなわ", prefs: [40, 41, 42, 43, 44, 45, 46, 47], viewBox: "-120 660 450 480" }
     };
 
     function App() {
-      // 最後に選択された都道府県コード
+      const [user, setUser] = useState(null);
+      const [loading, setLoading] = useState(true);
+
+      const [totalScore, setTotalScore] = useState(0);
+      const [bestScore, setBestScore] = useState(0);
+      const [bestCorrect, setBestCorrect] = useState(0);
+      const [bestCombo, setBestCombo] = useState(0);
+
+      const [bestTime, setBestTime] = useState(() => {
+        return parseInt(safeGetLocalStorage("japan_map_quiz_best_time", "999999"), 10);
+      });
+
+      const [regionBestScores, setRegionBestScores] = useState(() => {
+        const scores = {};
+        Object.keys(REGION_GROUPS).forEach(key => {
+          scores[key] = parseInt(safeGetLocalStorage(`japan_map_quiz_best_score_${key}`, "0"), 10);
+        });
+        return scores;
+      });
+
+      const [regionBestTimes, setRegionBestTimes] = useState(() => {
+        const times = {};
+        Object.keys(REGION_GROUPS).forEach(key => {
+          times[key] = parseInt(safeGetLocalStorage(`japan_map_quiz_best_time_${key}`, "999999"), 10);
+        });
+        return times;
+      });
+
+      const [quizMode, setQuizChoiceMode] = useState("touch");
       const [selectedCode, setSelectedCode] = useState(null);
-
-      // UI表示制御
       const [showRegionSelect, setShowRegionSelect] = useState(false);
-      const [selectedRegionKey, setSelectedRegionKey] = useState(null); // 選択中の地方キー
+      const [selectedRegionKey, setSelectedRegionKey] = useState(null);
 
-      // ルーレット用ステート
-      const [rouletteKey, setRouletteKey] = useState(null); // 現在指し示している地方
-      const [isRouletteActive, setIsRouletteActive] = useState(false); // ルーレット稼働中フラグ
-      const [finalSelectedKey, setFinalSelectedKey] = useState(null); // 最終決定した地方
+      const [rouletteKey, setRouletteKey] = useState(null);
+      const [finalSelectedKey, setFinalSelectedKey] = useState(null);
+      const [isRouletteActive, setIsRouletteActive] = useState(false);
 
-      // クイズステート
       const [quizActive, setQuizActive] = useState(false);
-      const [quizDifficulty, setQuizDifficulty] = useState("easy"); // "easy" (ヒント表示), "normal" (白地図)
-      const [currentTarget, setCurrentTarget] = useState(null); // 出題中
-      const [quizQueue, setQuizQueue] = useState([]); // 残りの問題キュー
+      const [quizDifficulty, setQuizDifficulty] = useState("easy");
+      const [currentTarget, setCurrentTarget] = useState(null);
+      const [quizQueue, setQuizQueue] = useState([]);
       const [score, setScore] = useState(0);
       const [combo, setCombo] = useState(0);
       const [maxCombo, setMaxCombo] = useState(0);
       const [totalQuestions, setTotalQuestions] = useState(0);
-      const [maxQuestions, setMaxQuestions] = useState(15); // 出題総数
+      const [maxQuestions, setMaxQuestions] = useState(15);
       const [correctAnswers, setCorrectAnswers] = useState(0);
-      const [quizFeedback, setQuizFeedback] = useState(null); // 正誤フィードバック
+      const [quizFeedback, setQuizFeedback] = useState(null);
       const [timeLeft, setTimeLeft] = useState(30);
-      const [quizFinished, setQuizFinished] = useState(false); // ゲーム終了フラグ
-      const timerRef = useRef(null);
+      const [quizFinished, setQuizFinished] = useState(false);
 
-      // --- 新記録 & 自己ベスト & くす玉関連のステート ---
-      const [newRecords, setNewRecords] = useState({ score: false, correct: false, combo: false });
+      const quizStartTimeRef = useRef(null);
+      const [elapsedTime, setElapsedTime] = useState(0);
+
       const [showKusudama, setShowKusudama] = useState(false);
       const [isKusudamaOpen, setIsKusudamaOpen] = useState(false);
+      const [kusudamaFadeOut, setKusudamaFadeOut] = useState(false);
+      const [newRecords, setNewRecords] = useState({ score: false, correct: false, combo: false, time: false });
 
-      // パソコンに永続保存されている自己ベスト記録（ロード用状態）
-      const [bestScore, setBestScore] = useState(() => parseInt(safeGetLocalStorage('japan_map_quiz_high_score', '0'), 10));
-      const [bestCorrect, setBestCorrect] = useState(() => parseInt(safeGetLocalStorage('japan_map_quiz_max_correct', '0'), 10));
-      const [bestCombo, setBestCombo] = useState(() => parseInt(safeGetLocalStorage('japan_map_quiz_max_combo', '0'), 10));
+      const timerRef = useRef(null);
 
-      // 累計獲得スコア (パソコン永続記憶用)
-      const [totalScore, setTotalScore] = useState(() => parseInt(safeGetLocalStorage('japan_map_quiz_total_score', '0'), 10));
+      const currentViewBox = useMemo(() => {
+        const activeKey = rouletteKey || selectedRegionKey;
+        if (activeKey && REGION_GROUPS[activeKey]) { return REGION_GROUPS[activeKey].viewBox; }
+        return "0 0 1000 1000";
+      }, [selectedRegionKey, rouletteKey]);
 
-      // ルーレット効果音（カタッ、カタッという短いクリック音）
-      const playTick = () => {
-        try {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          if (!AudioContext) return;
-          const ctx = new AudioContext();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.type = "sine";
-          osc.frequency.setValueAtTime(1000, ctx.currentTime);
-          gain.gain.setValueAtTime(0.04, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
-          osc.start(ctx.currentTime);
-          osc.stop(ctx.currentTime + 0.05);
-        } catch (e) {}
+      const isPrefectureVisible = (code) => {
+        const activeKey = rouletteKey || selectedRegionKey;
+        if (!activeKey || !REGION_GROUPS[activeKey]) { return true; }
+        return REGION_GROUPS[activeKey].prefs.includes(parseInt(code, 10));
       };
 
-      // 最終決定時の決定ファンファーレ音
-      const playSelect = () => {
-        try {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          if (!AudioContext) return;
-          const ctx = new AudioContext();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.type = "sine";
-          osc.frequency.setValueAtTime(880, ctx.currentTime);
-          gain.gain.setValueAtTime(0.1, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.005, ctx.currentTime + 0.4);
-          osc.start(ctx.currentTime);
-          osc.stop(ctx.currentTime + 0.4);
-        } catch (e) {}
+      const showBoundaryLine = useMemo(() => {
+        const activeKey = rouletteKey || selectedRegionKey;
+        if (!activeKey) return true;
+        return activeKey === "hokkaido_tohoku" || activeKey === "kyushu_okinawa";
+      }, [selectedRegionKey, rouletteKey]);
+
+      const getPrefectureColor = (code) => {
+        const pref = PREFECTURE_DATA[code];
+        if (!pref) return "#f8fafc";
+        if (isRouletteActive && rouletteKey) {
+          if (REGION_GROUPS[rouletteKey].prefs.includes(parseInt(code, 10))) { return REGION_COLORS[pref.region].fill; }
+          return "#f1f5f9";
+        }
+        if (quizActive && quizFeedback && !quizFeedback.correct && currentTarget && parseInt(currentTarget.code, 10) === parseInt(code, 10)) {
+          return "#ff4444"; 
+        }
+        if (quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === parseInt(code, 10)) {
+          return "#fbbf24"; 
+        }
+        if (!quizActive) { return REGION_COLORS[pref.region].fill; }
+        if (quizDifficulty === "normal") { return "#f8fafc"; }
+        return REGION_COLORS[pref.region].fill;
       };
 
-      // Web Audio APIによる、外部依存なしのクリアな「ピンポン」電子音
+      const getRankEvaluator = () => {
+        const rate = (correctAnswers / maxQuestions) * 100;
+        if (rate === 100) return { 
+          title: <React.Fragment><ruby>日本地図<rt>にほんちず</rt></ruby>マスター</React.Fragment>, 
+          desc: <React.Fragment><ruby>完璧<rt>かんぺき</rt></ruby>です！あなた<ruby>以上<rt>いじょう</rt></ruby>に<ruby>日本<rt>にほん</rt></ruby>の<ruby>地理<rt>ちり</rt></ruby>を<ruby>愛<rt>あい</rt></ruby>する<ruby>人<rt>ひと</rt></ruby>はいません！</React.Fragment>, 
+          color: "text-rose-600" 
+        };
+        if (rate >= 80) return { 
+          title: <React.Fragment><ruby>超<rt>ちょう</rt></ruby>・<ruby>地理<rt>ちり</rt></ruby>ツウ</React.Fragment>, 
+          desc: <React.Fragment><ruby>素晴<rt>すば</rt></ruby>らしい<ruby>成績<rt>せいせき</rt></ruby>！<ruby>日本中<rt>いじょう</rt></ruby>のどこへ<ruby>行<rt>い</rt></ruby>っても<ruby>迷<rt>まよ</rt></ruby>うことはないでしょう！</React.Fragment>, 
+          color: "text-amber-600" 
+        };
+        if (rate >= 50) return { 
+          title: <React.Fragment><ruby>中堅地理<rt>ちゅうけんちり</rt></ruby>ファン</React.Fragment>, 
+          desc: <React.Fragment>なかなかの<ruby>実力<rt>じりょく</rt></ruby>です！もう少し<ruby>練習<rt>れんしゅう</rt></ruby>すればマスターになれます！</React.Fragment>, 
+          color: "text-emerald-600" 
+        };
+        return { 
+          title: <React.Fragment><ruby>見習<rt>みなら</rt></ruby>いトラベラー</React.Fragment>, 
+          desc: <React.Fragment>まずは<ruby>近<rt>ちか</rt></ruby>の<ruby>都道府県<rt>とどうふけん</rt></ruby>から、<ruby>少<rt>すこ</rt></ruby>しずつ<ruby>覚<rt>おぼ</rt></ruby>えていきましょう！</React.Fragment>, 
+          color: "text-blue-600" 
+        };
+      };
+
+      // 制限時間タイマー
+      useEffect(() => {
+        if (quizActive && timeLeft > 0 && !quizFeedback && !quizFinished) {
+          timerRef.current = setTimeout(() => {
+            setTimeLeft(prev => prev - 1);
+          }, 1000);
+        } else if (timeLeft === 0 && quizActive && !quizFeedback && !quizFinished) {
+          setCombo(0);
+          setQuizFeedback({ 
+            correct: false, 
+            message: `時間切(じかんぎ)れ！` 
+          });
+          setTotalQuestions(prev => prev + 1);
+          
+          setTimeout(() => {
+            setQuizFeedback(null);
+            setSelectedCode(null);
+            const nextQueue = quizQueue.slice(1);
+            setQuizQueue(nextQueue);
+
+            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) {
+              endQuiz(true);
+            } else {
+              setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]);
+              setTimeLeft(30);
+            }
+          }, 1800);
+        }
+        return () => clearTimeout(timerRef.current);
+      }, [quizActive, timeLeft, quizFeedback, quizFinished]);
+
+      // ゲーム終了処理 (新記録の算出、Firebaseへの永続クラウドセーブ＆ローカルセーブ、くす玉自動フェードアウト付き)
+      const endQuiz = (isFinished = false) => {
+        setQuizActive(false);
+        if (isFinished) {
+          setQuizFinished(true);
+
+          // ⏱️ タイムアタック最終時間の確定
+          const duration = quizStartTimeRef.current ? Date.now() - quizStartTimeRef.current : 0;
+          setElapsedTime(duration);
+
+          const newTotalScore = totalScore + score;
+          
+          // 全国と地方別でハイスコア判定
+          let isNewScore = false;
+          let updatedBestScore = bestScore;
+          const updatedRegionBestScores = { ...regionBestScores };
+
+          if (selectedRegionKey) {
+            const currentRegionBest = regionBestScores[selectedRegionKey] || 0;
+            isNewScore = score > currentRegionBest;
+            if (isNewScore) {
+              updatedRegionBestScores[selectedRegionKey] = score;
+              setRegionBestScores(updatedRegionBestScores);
+              safeSetLocalStorage(`japan_map_quiz_best_score_${selectedRegionKey}`, score.toString());
+            }
+          } else {
+            isNewScore = score > bestScore;
+            if (isNewScore) {
+              updatedBestScore = score;
+              setBestScore(score);
+              safeSetLocalStorage("japan_map_quiz_best_score", score.toString());
+            }
+          }
+
+          // ⏱️ タイムアタック最速タイム（ベストタイム）判定
+          let isNewTime = false;
+          let updatedBestTime = bestTime;
+          const updatedRegionBestTimes = { ...regionBestTimes };
+
+          if (selectedRegionKey) {
+            const currentRegionBestTime = regionBestTimes[selectedRegionKey] || 999999;
+            isNewTime = duration > 0 && duration < currentRegionBestTime;
+            if (isNewTime) {
+              updatedRegionBestTimes[selectedRegionKey] = duration;
+              setRegionBestTimes(updatedRegionBestTimes);
+              safeSetLocalStorage(`japan_map_quiz_best_time_${selectedRegionKey}`, duration.toString());
+            }
+          } else {
+            isNewTime = duration > 0 && duration < bestTime;
+            if (isNewTime) {
+              updatedBestTime = duration;
+              setBestTime(duration);
+              safeSetLocalStorage("japan_map_quiz_best_time", duration.toString());
+            }
+          }
+
+          const isNewCorrect = correctAnswers > bestCorrect;
+          const isNewCombo = maxCombo > bestCombo;
+          // 新記録の候補に「かかった時間」を統合
+          const hasNew = isNewScore || isNewCorrect || isNewCombo || isNewTime;
+
+          const updatedBestCorrect = isNewCorrect ? correctAnswers : bestCorrect;
+          const updatedBestCombo = isNewCombo ? maxCombo : bestCombo;
+
+          setNewRecords({
+            score: isNewScore,
+            correct: isNewCorrect,
+            combo: isNewCombo,
+            time: isNewTime
+          });
+
+          // 【重要】パソコンへ確実にバックアップとして常にローカルセーブを実行
+          safeSetLocalStorage("japan_map_quiz_total_score", newTotalScore.toString());
+          safeSetLocalStorage("japan_map_quiz_best_correct", updatedBestCorrect.toString());
+          safeSetLocalStorage("japan_map_quiz_best_combo", updatedBestCombo.toString());
+
+          // クラウド進捗ロードが遅れている場合でも、画面上の値をその場で即座に最新アップデート
+          setTotalScore(newTotalScore);
+          setBestCorrect(updatedBestCorrect);
+          setBestCombo(updatedBestCombo);
+
+          // Firebaseが動作中の場合は、クラウド側にも完全に上書きマージ・永続セーブを施す
+          if (typeof firebase !== 'undefined' && firebase.apps && user) {
+            const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/scores/stats`);
+            
+            const updatePayload = {
+              totalScore: newTotalScore,
+              bestScore: updatedBestScore,
+              bestCorrect: updatedBestCorrect,
+              bestCombo: updatedBestCombo,
+              bestTime: updatedBestTime
+            };
+
+            if (selectedRegionKey) {
+              if (isNewScore) { updatePayload[`bestScore_${selectedRegionKey}`] = score; }
+              if (isNewTime) { updatePayload[`bestTime_${selectedRegionKey}`] = duration; }
+            }
+
+            docRef.set(updatePayload, { merge: true }).catch(err => {
+              console.error("Firestore cloud progress saving error:", err);
+            });
+          }
+
+          // くす玉演出
+          if (hasNew) {
+            setShowKusudama(true);
+            setIsKusudamaOpen(false);
+            setKusudamaFadeOut(false);
+
+            // 0.6秒後にくす玉をパカッと割る
+            setTimeout(() => {
+              setIsKusudamaOpen(true);
+
+              // 豪華なお祝い紙吹雪 (3秒間連発)
+              const duration = 3 * 1000;
+              const animationEnd = Date.now() + duration;
+              const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 0 };
+              const randomInRange = (min, max) => Math.random() * (max - min) + min;
+
+              const interval = setInterval(() => {
+                const timeLeft = animationEnd - Date.now();
+                if (timeLeft <= 0) { return clearInterval(interval); }
+                const particleCount = 50 * (timeLeft / duration);
+                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 } }));
+                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 } }));
+              }, 250);
+            }, 600);
+
+            // 🌟 3.5秒後にくす玉をフェードアウトして縮小開始
+            setTimeout(() => { setKusudamaFadeOut(true); }, 3500);
+
+            // 🌟 4.5秒後に完全にDOMから削除し、画面をスッキリ整理
+            setTimeout(() => { setShowKusudama(false); }, 4500);
+
+          } else {
+            confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
+          }
+        }
+      };
+
+      // 認証の安全な読み込み
+      useEffect(() => {
+        const initAuth = async () => {
+          if (typeof firebase === 'undefined' || !firebase.apps) {
+            const localTotal = parseInt(safeGetLocalStorage("japan_map_quiz_total_score", "0"), 10);
+            const localBest = parseInt(safeGetLocalStorage("japan_map_quiz_best_score", "0"), 10);
+            const localCorrect = parseInt(safeGetLocalStorage("japan_map_quiz_best_correct", "0"), 10);
+            const localCombo = parseInt(safeGetLocalStorage("japan_map_quiz_best_combo", "0"), 10);
+            const localBestTime = parseInt(safeGetLocalStorage("japan_map_quiz_best_time", "999999"), 10);
+            
+            setTotalScore(localTotal);
+            setBestScore(localBest);
+            setBestCorrect(localCorrect);
+            setBestCombo(localCombo);
+            setBestTime(localBestTime);
+            setLoading(false);
+            return;
+          }
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await auth.signInWithCustomToken(__initial_auth_token);
+            } else {
+              await auth.signInAnonymously();
+            }
+          } catch (e) {
+            console.error("Firebase Authentication failed:", e);
+            setLoading(false);
+          }
+        };
+
+        initAuth();
+
+        if (typeof firebase !== 'undefined' && firebase.apps) {
+          const unsubscribe = auth.onAuthStateChanged((u) => {
+            setUser(u);
+            if (!u) { setLoading(false); }
+          });
+          return () => unsubscribe();
+        }
+      }, []);
+
+      // クラウド進捗データのリアルタイム同期 ＆ ローカルセーブマージ
+      useEffect(() => {
+        const localTotal = parseInt(safeGetLocalStorage("japan_map_quiz_total_score", "0"), 10);
+        const localBest = parseInt(safeGetLocalStorage("japan_map_quiz_best_score", "0"), 10);
+        const localCorrect = parseInt(safeGetLocalStorage("japan_map_quiz_best_correct", "0"), 10);
+        const localCombo = parseInt(safeGetLocalStorage("japan_map_quiz_best_combo", "0"), 10);
+        const localBestTime = parseInt(safeGetLocalStorage("japan_map_quiz_best_time", "999999"), 10);
+
+        const localRegionHighs = {};
+        Object.keys(REGION_GROUPS).forEach(key => {
+          localRegionHighs[key] = parseInt(safeGetLocalStorage(`japan_map_quiz_best_score_${key}`, "0"), 10);
+        });
+
+        const localRegionTimes = {};
+        Object.keys(REGION_GROUPS).forEach(key => {
+          localRegionTimes[key] = parseInt(safeGetLocalStorage(`japan_map_quiz_best_time_${key}`, "999999"), 10);
+        });
+
+        if (typeof firebase === 'undefined' || !firebase.apps || !user) {
+          setTotalScore(localTotal);
+          setBestScore(localBest);
+          setBestCorrect(localCorrect);
+          setBestCombo(localCombo);
+          setBestTime(localBestTime);
+          setRegionBestScores(localRegionHighs);
+          setRegionBestTimes(localRegionTimes);
+          setLoading(false);
+          return;
+        }
+
+        const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/scores/stats`);
+
+        const unsubscribe = docRef.onSnapshot((doc) => {
+          if (doc.exists) {
+            const data = doc.data();
+            const cloudTotal = data.totalScore || 0;
+            const cloudBest = data.bestScore || 0;
+            const cloudCorrect = data.bestCorrect || 0;
+            const cloudCombo = data.bestCombo || 0;
+            const cloudBestTime = data.bestTime || 999999;
+
+            const finalTotal = Math.max(cloudTotal, localTotal);
+            const finalBest = Math.max(cloudBest, localBest);
+            const finalCorrect = Math.max(cloudCorrect, localCorrect);
+            const finalCombo = Math.max(cloudCombo, localCombo);
+
+            const finalBestTime = (cloudBestTime > 0 && localBestTime > 0)
+              ? Math.min(cloudBestTime, localBestTime)
+              : (cloudBestTime || localBestTime || 999999);
+
+            setTotalScore(finalTotal);
+            setBestScore(finalBest);
+            setBestCorrect(finalCorrect);
+            setBestCombo(finalCombo);
+            setBestTime(finalBestTime);
+
+            safeSetLocalStorage("japan_map_quiz_total_score", finalTotal.toString());
+            safeSetLocalStorage("japan_map_quiz_best_score", finalBest.toString());
+            safeSetLocalStorage("japan_map_quiz_best_correct", finalCorrect.toString());
+            safeSetLocalStorage("japan_map_quiz_best_combo", finalCombo.toString());
+            safeSetLocalStorage("japan_map_quiz_best_time", finalBestTime.toString());
+
+            const mergedRegionBests = {};
+            Object.keys(REGION_GROUPS).forEach(key => {
+              const cloudRegionBest = data[`bestScore_${key}`] || 0;
+              const finalRegionBest = Math.max(cloudRegionBest, localRegionHighs[key] || 0);
+              mergedRegionBests[key] = finalRegionBest;
+              safeSetLocalStorage(`japan_map_quiz_best_score_${key}`, finalRegionBest.toString());
+            });
+            setRegionBestScores(mergedRegionBests);
+
+            const mergedRegionTimes = {};
+            Object.keys(REGION_GROUPS).forEach(key => {
+              const cloudRegionTime = data[`bestTime_${key}`] || 999999;
+              const localRegionTime = localRegionTimes[key] || 999999;
+              const finalRegionTime = (cloudRegionTime > 0 && localRegionTime > 0)
+                ? Math.min(cloudRegionTime, localRegionTime)
+                : (cloudRegionTime || localRegionTime || 999999);
+              mergedRegionTimes[key] = finalRegionTime;
+              safeSetLocalStorage(`japan_map_quiz_best_time_${key}`, finalRegionTime.toString());
+            });
+            setRegionBestTimes(mergedRegionTimes);
+
+          } else {
+            const initialCloudData = {
+              totalScore: localTotal,
+              bestScore: localBest,
+              bestCorrect: localCorrect,
+              bestCombo: localCombo,
+              bestTime: localBestTime
+            };
+            Object.keys(REGION_GROUPS).forEach(key => {
+              initialCloudData[`bestScore_${key}`] = localRegionHighs[key] || 0;
+              initialCloudData[`bestTime_${key}`] = localRegionTimes[key] || 999999;
+            });
+
+            docRef.set(initialCloudData).catch(err => console.error("Firestore initialization error:", err));
+
+            setTotalScore(localTotal);
+            setBestScore(localBest);
+            setBestCorrect(localCorrect);
+            setBestCombo(localCombo);
+            setBestTime(localBestTime);
+            setRegionBestScores(localRegionHighs);
+            setRegionBestTimes(localRegionTimes);
+          }
+          setLoading(false);
+        }, (error) => {
+          console.error("Firestore onSnapshot subscription failed, using local storage:", error);
+          setTotalScore(localTotal);
+          setBestScore(localBest);
+          setBestCorrect(localCorrect);
+          setBestCombo(localCombo);
+          setBestTime(localBestTime);
+          setRegionBestScores(localRegionHighs);
+          setRegionBestTimes(localRegionTimes);
+          setLoading(false);
+        });
+
+        return () => unsubscribe();
+      }, [user]);
+
+      // Web Audio APIによる、外部依存なしの「ピンポン」電子音
       const playPingPong = () => {
         try {
           const AudioContext = window.AudioContext || window.webkitAudioContext;
           if (!AudioContext) return;
           const ctx = new AudioContext();
           
-          // 1音目（ミ）
           const osc1 = ctx.createOscillator();
           const gain1 = ctx.createGain();
           osc1.connect(gain1);
@@ -280,7 +632,6 @@
           gain1.gain.setValueAtTime(0.12, ctx.currentTime);
           gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
           
-          // 2音目（ソ）
           const osc2 = ctx.createOscillator();
           const gain2 = ctx.createGain();
           osc2.connect(gain2);
@@ -300,40 +651,56 @@
         }
       };
 
-      // ルーレットによる自動地方選出アニメーション
+      // ルーレット移動中の「ピコッ」というシステム音
+      const playRouletteTick = (freq = 440) => {
+        try {
+          const AudioContext = window.AudioContext || window.webkitAudioContext;
+          if (!AudioContext) return;
+          const ctx = new AudioContext();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(freq, ctx.currentTime);
+          gain.gain.setValueAtTime(0.05, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.08);
+        } catch (e) {}
+      };
+
+      // おまかせスピーディールーレット
       const handleRoulette = () => {
         if (isRouletteActive) return;
         setIsRouletteActive(true);
         setFinalSelectedKey(null);
+        setSelectedRegionKey(null); // 地図のデフォルト全図化
         
         const keys = Object.keys(REGION_GROUPS);
         const finalKey = keys[Math.floor(Math.random() * keys.length)];
         
-        let currentDelay = 60; // 初期切り替え速度（短縮）
+        let currentDelay = 60; // 快速スタート
         let step = 0;
-        const totalSteps = 10 + Math.floor(Math.random() * 3); // 10〜12ステップ（短縮）
+        const totalSteps = 10 + Math.floor(Math.random() * 3); // 10〜12ステップで高速展開
         
         const tick = () => {
           if (step < totalSteps) {
             const tempKey = keys[step % keys.length];
             setRouletteKey(tempKey);
             
-            // 切り替え時の効果音
-            playTick();
+            // ルーレット進行中の短い電子音
+            playRouletteTick(440);
             
             step++;
-            // だんだん点滅をゆっくりにしていく
-            currentDelay += (step * 6); // 減速スピード調整（短縮）
+            currentDelay += (step * 8); // 快速かつ自然な減速感
             setTimeout(tick, currentDelay);
           } else {
-            // ルーレット停止、決定地方のセット
             setRouletteKey(finalKey);
             setFinalSelectedKey(finalKey);
             
-            // 決定ファンファーレ
-            playSelect();
+            playRouletteTick(880);
             
-            // 決定したボタンが光る状態で0.7秒静止してから、問題を出題（短縮）
             setTimeout(() => {
               setIsRouletteActive(false);
               setRouletteKey(null);
@@ -353,16 +720,13 @@
         
         let codes = [];
         if (regionKey && REGION_GROUPS[regionKey]) {
-          // 地方モード: 対象地域のみ
           codes = [...REGION_GROUPS[regionKey].prefs];
           setMaxQuestions(codes.length);
         } else {
-          // 全国モード
           codes = Object.keys(PREFECTURE_DATA).map(Number);
           setMaxQuestions(15);
         }
 
-        // シャッフル
         const shuffled = [...codes].sort(() => Math.random() - 0.5);
         
         setQuizQueue(shuffled);
@@ -377,54 +741,46 @@
         setSelectedCode(null);
         setShowRegionSelect(false);
 
-        // 新記録・くす玉状態をリセット
-        setNewRecords({ score: false, correct: false, combo: false });
+        setNewRecords({ score: false, correct: false, combo: false, time: false });
         setShowKusudama(false);
         setIsKusudamaOpen(false);
+        setKusudamaFadeOut(false);
         
-        // 最初の問題を設定
+        quizStartTimeRef.current = Date.now();
+        setElapsedTime(0);
+
         const first = shuffled[0];
         setCurrentTarget(PREFECTURE_DATA[first]);
         setTimeLeft(30);
       };
 
-      // 解答判定と即時問題遷移
-      const handlePrefectureClick = (code) => {
-        const clickedCode = parseInt(code, 10);
-        
-        // 地方モード中、ズーム枠外の都道府県のクリックを無視
-        if (selectedRegionKey && REGION_GROUPS[selectedRegionKey]) {
-          if (!REGION_GROUPS[selectedRegionKey].prefs.includes(clickedCode)) {
-            return;
-          }
-        }
-
-        setSelectedCode(clickedCode);
-
+      // 解答判定と即時問題遷移 (タッチクイズ・四択クイズ・有名なものクイズ 共用ロジック)
+      const handleChoiceValidation = (clickedCode) => {
         if (!quizActive || quizFeedback || quizFinished) return;
 
+        setSelectedCode(clickedCode);
         const isCorrect = clickedCode === currentTarget.code * 1;
         
         if (isCorrect) {
           const newCombo = combo + 1;
           setCombo(newCombo);
-          if (newCombo > maxCombo) {
-            setMaxCombo(newCombo);
-          }
+          if (newCombo > maxCombo) { setMaxCombo(newCombo); }
           setCorrectAnswers(prev => prev + 1);
-          setScore(prev => prev + 10 + (newCombo > 2 ? newCombo * 2 : 0)); // コンボボーナス
-          setQuizFeedback({ 
-            correct: true, 
-            message: `正解(せいかい)！ 【${currentTarget.name}(${currentTarget.ruby})】です。` 
-          });
+          setScore(prev => prev + 10 + (newCombo > 2 ? newCombo * 2 : 0));
+          
+          const feedbackMsg = quizMode === "specialties" ? (
+            <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の有名なものはその通りです！</span>
+          ) : (
+            <span><ruby>正解<rt>せいかい</rt></ruby>！ 【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】です。</span>
+          );
 
-          // ピンポン音
+          setQuizFeedback({ correct: true, message: feedbackMsg });
           playPingPong();
-
-          // 正解時は超高速(150ms)で次の問題に切り替える
           setTotalQuestions(prev => prev + 1);
+          
           setTimeout(() => {
             setQuizFeedback(null);
+            setSelectedCode(null); // 次の問題へ進む前に選択状態をリセット
             const nextQueue = quizQueue.slice(1);
             setQuizQueue(nextQueue);
 
@@ -438,45 +794,19 @@
 
         } else {
           setCombo(0);
-          setQuizFeedback({ 
-            correct: false, 
-            message: `そこは【${PREFECTURE_DATA[clickedCode].name}(${PREFECTURE_DATA[clickedCode].ruby})】です。正解(せいかい)は【${currentTarget.name}(${currentTarget.ruby})】でした。` 
-          });
+          
+          const feedbackMsg = quizMode === "specialties" ? (
+            <span>それは【<ruby>{PREFECTURE_DATA[clickedCode].name}<rt>{PREFECTURE_DATA[clickedCode].ruby}</rt></ruby>】の有名なものでした。</span>
+          ) : (
+            <span>そこは【<ruby>{PREFECTURE_DATA[clickedCode].name}<rt>{PREFECTURE_DATA[clickedCode].ruby}</rt></ruby>】でした。</span>
+          );
 
-          // 不正解時はしっかり確認できるように1.8秒ディレイ
-          setTotalQuestions(prev => prev + 1);
-          setTimeout(() => {
-            setQuizFeedback(null);
-            const nextQueue = quizQueue.slice(1);
-            setQuizQueue(nextQueue);
-
-            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) {
-              endQuiz(true);
-            } else {
-              setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]);
-              setTimeLeft(30);
-            }
-          }, 1800);
-        }
-      };
-
-      // 制限時間タイマー
-      useEffect(() => {
-        if (quizActive && timeLeft > 0 && !quizFeedback && !quizFinished) {
-          timerRef.current = setTimeout(() => {
-            setTimeLeft(prev => prev - 1);
-          }, 1000);
-        } else if (timeLeft === 0 && quizActive && !quizFeedback && !quizFinished) {
-          // 時間切れ
-          setCombo(0);
-          setQuizFeedback({ 
-            correct: false, 
-            message: `時間切(じかんぎ)れ！ 正解(せいかい)は【${currentTarget.name}(${currentTarget.ruby})】でした。` 
-          });
+          setQuizFeedback({ correct: false, message: feedbackMsg });
           setTotalQuestions(prev => prev + 1);
           
           setTimeout(() => {
             setQuizFeedback(null);
+            setSelectedCode(null); // 次の問題へ進む前に選択状態をリセット
             const nextQueue = quizQueue.slice(1);
             setQuizQueue(nextQueue);
 
@@ -488,207 +818,128 @@
             }
           }, 1800);
         }
-
-        return () => clearTimeout(timerRef.current);
-      }, [quizActive, timeLeft, quizFeedback, quizFinished]);
-
-      // ゲーム終了処理
-      const endQuiz = (isFinished = false) => {
-        setQuizActive(false);
-        if (isFinished) {
-          setQuizFinished(true);
-
-          // 累計獲得スコアを加算してパソコンに保存
-          const prevTotalScore = parseInt(safeGetLocalStorage('japan_map_quiz_total_score', '0'), 10);
-          const newTotalScore = prevTotalScore + score;
-          safeSetLocalStorage('japan_map_quiz_total_score', newTotalScore.toString());
-          setTotalScore(newTotalScore);
-
-          // 自己ベストデータをパソコン（localStorage）からロード
-          const prevHighScore = parseInt(safeGetLocalStorage('japan_map_quiz_high_score', '0'), 10);
-          const prevMaxCorrect = parseInt(safeGetLocalStorage('japan_map_quiz_max_correct', '0'), 10);
-          const prevMaxCombo = parseInt(safeGetLocalStorage('japan_map_quiz_max_combo', '0'), 10);
-
-          // 1つでも新記録（ハイスコア）を上回ったか判定
-          const isNewScore = score > prevHighScore;
-          const isNewCorrect = correctAnswers > prevMaxCorrect;
-          const isNewCombo = maxCombo > prevMaxCombo;
-          const hasNew = isNewScore || isNewCorrect || isNewCombo;
-
-          setNewRecords({
-            score: isNewScore,
-            correct: isNewCorrect,
-            combo: isNewCombo
-          });
-
-          // 自己ベストを保存してステートをアップデート
-          if (isNewScore) {
-            safeSetLocalStorage('japan_map_quiz_high_score', score.toString());
-            setBestScore(score);
-          }
-          if (isNewCorrect) {
-            safeSetLocalStorage('japan_map_quiz_max_correct', correctAnswers.toString());
-            setBestCorrect(correctAnswers);
-          }
-          if (isNewCombo) {
-            safeSetLocalStorage('japan_map_quiz_max_combo', maxCombo.toString());
-            setBestCombo(maxCombo);
-          }
-
-          // くす玉アニメーションを起動
-          if (hasNew) {
-            setShowKusudama(true);
-            setIsKusudamaOpen(false);
-
-            // 0.6秒後にくす玉を割って垂れ幕を出す
-            setTimeout(() => {
-              setIsKusudamaOpen(true);
-
-              // 豪華なお祝い連発紙吹雪 (3秒間四方から紙吹雪をまき散らす)
-              const duration = 3 * 1000;
-              const animationEnd = Date.now() + duration;
-              const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 0 };
-
-              const randomInRange = (min, max) => Math.random() * (max - min) + min;
-
-              const interval = setInterval(() => {
-                const timeLeft = animationEnd - Date.now();
-                if (timeLeft <= 0) {
-                  return clearInterval(interval);
-                }
-                const particleCount = 50 * (timeLeft / duration);
-                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 } }));
-                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 } }));
-              }, 250);
-            }, 600);
-          } else {
-            // 新記録が無くても通常のお祝い紙吹雪
-            confetti({
-              particleCount: 120,
-              spread: 70,
-              origin: { y: 0.6 }
-            });
-          }
-        }
       };
 
-      // 都道府県カラーの算出
-      const getPrefectureColor = (code) => {
-        const pref = PREFECTURE_DATA[code];
-        if (!pref) return "#f8fafc";
-
-        // おまかせルーレット稼働時のダイナミック点滅処理
-        if (isRouletteActive && rouletteKey) {
-          if (REGION_GROUPS[rouletteKey].prefs.includes(parseInt(code, 10))) {
-            return REGION_COLORS[pref.region].fill; // 選択中地方は明るいカラー
-          }
-          return "#f1f5f9"; // それ以外は薄いグレーにしてルーレットを表現
+      // 四択クイズ・有名ものクイズの選択肢を動的に生成するヘルパー
+      const currentChoices = useMemo(() => {
+        if (!currentTarget || (quizMode === "touch")) return [];
+        let pool = [];
+        if (selectedRegionKey && REGION_GROUPS[selectedRegionKey]) {
+          pool = REGION_GROUPS[selectedRegionKey].prefs;
+        } else {
+          pool = Object.keys(PREFECTURE_DATA).map(Number);
         }
+        const choicesSet = new Set([parseInt(currentTarget.code, 10)]);
+        const maxChoiceCount = Math.min(pool.length, 4);
 
-        if (!quizActive) {
-          return REGION_COLORS[pref.region].fill;
+        while (choicesSet.size < maxChoiceCount) {
+          const randPref = pool[Math.floor(Math.random() * pool.length)];
+          choicesSet.add(randPref);
         }
+        return Array.from(choicesSet).sort(() => Math.random() - 0.5);
+      }, [currentTarget, quizMode, selectedRegionKey]);
 
-        if (quizDifficulty === "normal") {
-          return "#f8fafc";
-        }
-
-        return REGION_COLORS[pref.region].fill;
-      };
-
-      // ビューボックス（ズーム）調整
-      const currentViewBox = useMemo(() => {
-        // ルーレット中もその時々のズーム領域に連動させる
-        const activeKey = rouletteKey || selectedRegionKey;
-        if (activeKey && REGION_GROUPS[activeKey]) {
-          return REGION_GROUPS[activeKey].viewBox;
-        }
-        return "0 0 1000 1000";
-      }, [selectedRegionKey, rouletteKey]);
-
-      // 地方モード用：対象都道府県のみ表示
-      const isPrefectureVisible = (code) => {
-        // ルーレット中も現在フォーカスのある地方の都道府県だけを絞り込む
-        const activeKey = rouletteKey || selectedRegionKey;
-        if (!activeKey || !REGION_GROUPS[activeKey]) {
-          return true;
-        }
-        return REGION_GROUPS[activeKey].prefs.includes(parseInt(code, 10));
-      };
-
-      // 境界線の制御
-      const showBoundaryLine = useMemo(() => {
-        const activeKey = rouletteKey || selectedRegionKey;
-        if (!activeKey) return true;
-        return activeKey === "hokkaido_tohoku" || activeKey === "kyushu_okinawa";
-      }, [selectedRegionKey, rouletteKey]);
-
-      // 称号・ランク評価
-      const getRankEvaluator = () => {
-        const rate = (correctAnswers / maxQuestions) * 100;
-        if (rate === 100) return { 
-          title: <React.Fragment><ruby>日本地図<rt>にほんちず</rt></ruby>マスター</React.Fragment>, 
-          desc: <React.Fragment><ruby>完璧<rt>かんぺき</rt></ruby>です！あなた<ruby>以上<rt>いじょう</rt></ruby>に<ruby>日本<rt>にほん</rt></ruby>の<ruby>地理<rt>ちり</rt></ruby>を<ruby>愛<rt>あい</rt></ruby>する<ruby>人<rt>ひと</rt></ruby>はいません！</React.Fragment>, 
-          color: "text-rose-600" 
-        };
-        if (rate >= 80) return { 
-          title: <React.Fragment><ruby>超<rt>ちょう</rt></ruby>・<ruby>地理<rt>ちり</rt></ruby>ツウ</React.Fragment>, 
-          desc: <React.Fragment><ruby>素晴<rt>すば</rt></ruby>らしい<ruby>成績<rt>せいせき</rt></ruby>！<ruby>日本中<rt>にほんじゅう</rt></ruby>のどこへ<ruby>行<rt>い</rt></ruby>っても<ruby>迷<rt>まよ</rt></ruby>うことはないでしょう！</React.Fragment>, 
-          color: "text-amber-600" 
-        };
-        if (rate >= 50) return { 
-          title: <React.Fragment><ruby>中堅地理<rt>ちゅうけんちり</rt></ruby>ファン</React.Fragment>, 
-          desc: <React.Fragment>なかなかの<ruby>実力<rt>じりょく</rt></ruby>です！もう少し<ruby>練習<rt>れんしゅう</rt></ruby>すればマスターになれます！</React.Fragment>, 
-          color: "text-emerald-600" 
-        };
-        return { 
-          title: <React.Fragment><ruby>見習<rt>みなら</rt></ruby>いトラベラー</React.Fragment>, 
-          desc: <React.Fragment>まずは<ruby>近<rt>ちか</rt></ruby>くの<ruby>都道府県<rt>とどうふけん</rt></ruby>から、<ruby>少<rt>すこ</rt></ruby>しずつ<ruby>覚<rt>おぼ</rt></ruby>えていきましょう！</React.Fragment>, 
-          color: "text-blue-600" 
-        };
-      };
+      // タイムアタック最終時間の同期ローディング処理
+      if (loading) {
+        return (
+          <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50 text-slate-800">
+            <div className="w-12 h-12 border-4 border-rose-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+            <p className="font-bold text-sm tracking-wider text-slate-500 animate-pulse">データを読み込み中...</p>
+          </div>
+        );
+      }
 
       return (
         <div className="flex flex-col min-h-screen justify-between bg-slate-50">
           {}
-          {/* メインレイアウト */}
           <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center justify-center">
             
-            {/* 左側：日本地図 SVG (ゲーム完了時は全体を隠す) */}
+            {/* 左側：日本地図 SVG ＆ 出題ヘッダー (ゲーム完了時は全体を隠す) */}
             {!quizFinished && (
-              <section className="lg:col-span-7 bg-white border border-slate-200 rounded-[2.5rem] p-4 md:p-6 shadow-sm flex flex-col items-center justify-center min-h-[500px] lg:min-h-[580px] relative overflow-hidden w-full">
+              <section className={`lg:col-span-7 bg-white border border-slate-200 rounded-[2.5rem] p-4 md:p-6 shadow-sm flex flex-col items-stretch ${quizActive ? 'justify-start gap-1' : 'justify-between'} min-h-[500px] lg:min-h-[580px] relative w-full`}>
                 
-                {/* 地図上の問題表示オーバーレイ */}
+                {/* クイズ進行中の上部表示エリア（スクロール追従・見切れ防止対応） */}
                 {quizActive && !quizFinished && (
-                  <div className="absolute top-4 left-4 z-10">
-                    <div className="bg-white/95 border border-slate-200 px-5 py-3.5 rounded-2xl shadow-md backdrop-blur-sm">
-                      <p className="text-[10px] text-rose-500 font-black uppercase tracking-wider mb-0.5 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping"></span> どこをクリック？
+                  <div className="sticky top-0 bg-white/95 backdrop-blur-md border-b border-slate-100 py-3 px-4 -mx-4 md:-mx-6 mb-2 z-30 w-full flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition-all duration-300">
+                    <div className="flex-1">
+                      <p className="text-[11px] text-rose-500 font-black uppercase tracking-wider mb-0.5 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping"></span>
+                        {(() => {
+                          if (quizMode === "touch") return "どこをクリック？";
+                          if (quizMode === "choices") return "この都道府県の名前は？";
+                          return "この都道府県の有名なものはどれ？";
+                        })()}
                       </p>
-                      <h3 className="text-2xl font-black text-slate-800">
-                        【<ruby>{currentTarget?.name}<rt>{currentTarget?.ruby}</rt></ruby>】
-                      </h3>
-                      {quizDifficulty === "easy" ? (
-                        <div className="text-[11px] text-emerald-600 mt-1 font-bold flex items-center gap-1">
-                          <span>💡 <ruby>特産・名所<rt>とくさん・めいしょ</rt></ruby>: </span>
-                          <span>{currentTarget?.specialties}</span>
+                      
+                      {/* 出題テキストの超巨大表示 */}
+                      {(() => {
+                        if (quizMode === "choices") { return <h3 className="text-3xl sm:text-4.5xl font-black text-slate-800 leading-normal">【？？？】</h3>; }
+                        if (quizMode === "specialties") {
+                          return (
+                            <h3 className="text-3xl sm:text-4.5xl font-black text-slate-800 leading-normal">
+                              【<ruby>{currentTarget?.name}<rt>{currentTarget?.ruby}</rt></ruby>】の<ruby>有名<rt>ゆうめい</rt></ruby>なものは？
+                            </h3>
+                          );
+                        }
+                        return (
+                          <h3 className="text-3xl sm:text-4.5xl font-black text-slate-800 leading-normal">
+                            【<ruby>{currentTarget?.name}<rt>{currentTarget?.ruby}</rt></ruby>】
+                          </h3>
+                        );
+                      })()}
+                      
+                      {/* イージーモード（地方モードなど）の時にヒント（特産・名所）を表示 */}
+                      {quizDifficulty === "easy" && (
+                        <div className="text-[11px] text-emerald-600 mt-1 font-bold flex flex-wrap items-center gap-1">
+                          {(() => {
+                            if (quizMode === "choices") {
+                              return (
+                                <>
+                                  <span>💡 <ruby>特産・名所<rt>とくさん・めいしょ</rt></ruby>: </span>
+                                  <span>{currentTarget?.specialties}</span>
+                                </>
+                              );
+                            }
+                            if (quizMode === "specialties") {
+                              return <span>🗺️ <ruby>場所<rt>ばしょ</rt></ruby>はここ！黄色のところをよく見よう！</span>;
+                            }
+                            return <span>{currentTarget?.specialties}</span>;
+                          })()}
                         </div>
-                      ) : (
+                      )}
+                      {quizDifficulty === "normal" && (
                         <p className="text-[11px] text-slate-400 mt-1 font-bold">🗺️ ヒントなし（<ruby>白地図<rt>はくちず</rt></ruby>）</p>
                       )}
                     </div>
-                  </div>
-                )}
 
-                {/* もどるボタン (プレイ中またはルーレット外で表示) */}
-                {quizActive && !quizFinished && (
-                  <div className="absolute top-4 right-4 z-20">
-                    <button 
-                      onClick={() => endQuiz(false)}
-                      className="bg-red-500 hover:bg-red-600 text-white font-extrabold text-lg py-2.5 px-6 rounded-2xl shadow-md transition-all hover:-translate-y-0.5"
-                    >
-                      ← <ruby>戻<rt>もど</rt></ruby>る
-                    </button>
+                    {/* クイズ時のタイマー・進捗・スコア状況 ＆ もどるボタン */}
+                    <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+                      <div className="bg-slate-50 border border-slate-200 p-2.5 rounded-2xl shadow-xs flex gap-4 text-center">
+                        <div>
+                          <p className="text-[9px] text-slate-400 font-bold uppercase">スコア</p>
+                          <span className="text-sm font-black text-rose-600">{score}</span>
+                        </div>
+                        <div className="border-l border-slate-200 pl-3">
+                          <p className="text-[9px] text-slate-400 font-bold uppercase">コンボ</p>
+                          <span className="text-sm font-black text-amber-500">{combo}</span>
+                        </div>
+                        <div className="border-l border-slate-200 pl-3">
+                          <p className="text-[9px] text-slate-400 font-bold uppercase"><ruby>制限時間<rt>せいげんじかん</rt></ruby></p>
+                          <span className="text-sm font-black text-emerald-500">{timeLeft}秒</span>
+                        </div>
+                      </div>
+                      <div className="flex flex-col items-end gap-1">
+                        <button 
+                          onClick={() => endQuiz(false)}
+                          className="bg-red-500 hover:bg-red-600 text-white font-extrabold text-xs py-1.5 px-3 rounded-xl shadow-xs transition-all hover:-translate-y-0.5"
+                        >
+                          ← <ruby>戻る<rt>もどる</rt></ruby>
+                        </button>
+                        <div className="bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200 text-[10px] font-bold text-slate-600 whitespace-nowrap">
+                          <ruby>進捗<rt>しんちょく</rt></ruby>: {totalQuestions + 1} / {maxQuestions} <ruby>問目<rt>もんめ</rt></ruby>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -712,50 +963,35 @@
                   </div>
                 )}
 
-                {/* クイズ時のタイマー・進捗・スコア状況 */}
-                {quizActive && !quizFinished && (
-                  <div className="absolute top-20 right-4 z-10 flex flex-col gap-2 items-end">
-                    <div className="bg-white/95 border border-slate-200 p-3 rounded-2xl shadow-md flex gap-4 text-center backdrop-blur-sm">
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase">スコア</p>
-                        <span className="text-lg font-black text-rose-600">{score}</span>
-                      </div>
-                      <div className="border-l border-slate-200 pl-4">
-                        <p className="text-[10px] text-slate-400 font-bold uppercase">コンボ</p>
-                        <span className="text-lg font-black text-amber-500">{combo} <span className="text-xs"><ruby>コンボ<rt>こんぼ</rt></ruby></span></span>
-                      </div>
-                      <div className="border-l border-slate-200 pl-4">
-                        <p className="text-[10px] text-slate-400 font-bold uppercase"><ruby>制限時間<rt>せいげんじかん</rt></ruby></p>
-                        <span className={`text-lg font-black ${timeLeft <= 5 ? "text-red-500 animate-bounce" : "text-emerald-500"}`}>{timeLeft}<ruby>秒<rt>びょう</rt></ruby></span>
-                      </div>
-                    </div>
-                    <div className="bg-slate-100 px-3 py-1 rounded-full border border-slate-200 text-[11px] font-bold text-slate-600">
-                      <ruby>進捗<rt>しんちょく</rt></ruby>: {totalQuestions + 1} / {maxQuestions} <ruby>問目<rt>もんめ</rt></ruby>
-                    </div>
-                  </div>
-                )}
-
                 {/* 正誤判定のフィードバック */}
                 {quizFeedback && (
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 px-6 py-5 rounded-3xl shadow-xl flex flex-col items-center justify-center gap-2 border text-center max-w-sm backdrop-blur-md animate-bounce">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 p-2 text-center w-full max-w-sm animate-bounce">
                     {quizFeedback.correct ? (
-                      <div className="bg-emerald-50/95 border border-emerald-200 text-emerald-800 rounded-2xl p-5">
-                        <div className="text-4xl mb-2">⭕</div>
-                        <h4 className="text-xl font-bold"><ruby>正解<rt>せいかい</rt></ruby>！</h4>
-                        <p className="text-xs mt-1.5 font-medium">{quizFeedback.message}</p>
+                      <div className="bg-white/95 border-4 border-emerald-400 text-emerald-800 rounded-[2.5rem] p-8 shadow-2xl backdrop-blur-md flex flex-col items-center justify-center gap-2">
+                        <div className="text-9xl drop-shadow-md select-none transform scale-110">⭕</div>
+                        <h4 className="text-3xl font-black mt-4"><ruby>正解<rt>せいかい</rt></ruby>！</h4>
+                        <p className="text-sm font-bold text-slate-600 mt-2">{quizFeedback.message}</p>
                       </div>
                     ) : (
-                      <div className="bg-red-50/95 border border-red-200 text-red-800 rounded-2xl p-5">
-                        <div className="text-4xl mb-2">❌</div>
-                        <h4 className="text-xl font-bold">どんまい！</h4>
-                        <p className="text-xs mt-1.5 font-medium">{quizFeedback.message}</p>
+                      <div className="bg-white/95 border-4 border-red-400 text-red-800 rounded-2xl p-4 shadow-2xl backdrop-blur-md flex flex-col items-center justify-center gap-1 max-w-[90%] mx-auto">
+                        <div className="text-6xl drop-shadow-sm select-none">❌</div>
+                        <div className="text-slate-400 text-xs font-black tracking-widest uppercase mt-1"><ruby>正解<rt>せいかい</rt></ruby>は...</div>
+                        
+                        <h4 className="text-4xl sm:text-5xl font-black text-red-600 drop-shadow-md leading-normal my-1 select-all">
+                          {quizMode === "specialties" ? (
+                            currentTarget?.specialties
+                          ) : (
+                            <ruby>{currentTarget?.name}<rt>{currentTarget?.ruby}</rt></ruby>
+                          )}
+                        </h4>
+                        
+                        <p className="text-sm font-bold text-slate-600 mt-1">{quizFeedback.message}</p>
                       </div>
                     )}
                   </div>
                 )}
 
                 {/* 日本地図 SVG */}
-                {}
                 <svg 
                   className="geolonia-svg-map w-full h-[480px] md:h-[520px] transition-all duration-700 ease-in-out" 
                   viewBox={currentViewBox}
@@ -764,14 +1000,16 @@
                   <g className="svg-map" transform="matrix(1.028807, 0, 0, 1.028807, -47.544239, -28.806583)">
                     <g className="prefectures" transform="matrix(1, 0, 0, 1, 6, 18)">
                       
-                      {/* 沖縄: Code 47 */}
+                      {/* 沖縄県: Code 47 */}
                       <g 
                         onClick={() => handlePrefectureClick("47")} 
-                        className="okinawa kyushu-okinawa prefecture" 
+                        className={`okinawa kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 47 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("47")} 
                         fillRule="nonzero" 
-                        transform="translate(52.000000, 193.000000)"
+                        stroke={selectedCode === 47 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 47 ? "3.5" : "1.5"} 
+                        transform={selectedRegionKey === "kyushu_okinawa" || rouletteKey === "kyushu_okinawa" ? "translate(-80.000000, 1040.000000) scale(0.5)" : "translate(52.000000, 193.000000)"}
                         style={{ display: isPrefectureVisible("47") ? "block" : "none" }}
                       >
                         <polygon points="4 109 6 110 4 111 0 110"/>
@@ -785,13 +1023,14 @@
                         <polygon points="293 11 294 13 292 12"/>
                       </g>
 
-                      {/* 鹿児島: Code 46 */}
+                      {/* 鹿児島県: Code 46 */}
                       <g 
                         onClick={() => handlePrefectureClick("46")} 
-                        className="kagoshima kyushu kyushu-okinawa prefecture" 
+                        className={`kagoshima kyushu kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 46 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("46")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 46 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 46 ? "3.5" : "1.5"} 
                         transform="translate(96.000000, 17.000000)"
                         style={{ display: isPrefectureVisible("46") ? "block" : "none" }}
                       >
@@ -815,10 +1054,11 @@
                       {/* 宮崎県: Code 45 */}
                       <g 
                         onClick={() => handlePrefectureClick("45")} 
-                        className="miyazaki kyushu kyushu-okinawa prefecture" 
+                        className={`miyazaki kyushu kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 45 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("45")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 45 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 45 ? "3.5" : "1.5"} 
                         transform="translate(152.000000, 824.000000)"
                         style={{ display: isPrefectureVisible("45") ? "block" : "none" }}
                       >
@@ -828,10 +1068,11 @@
                       {/* 大分県: Code 44 */}
                       <g 
                         onClick={() => handlePrefectureClick("44")} 
-                        className="oita kyushu kyushu-okinawa prefecture" 
+                        className={`oita kyushu kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 44 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("44")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 44 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 44 ? "3.5" : "1.5"} 
                         transform="translate(163.000000, 771.000000)"
                         style={{ display: isPrefectureVisible("44") ? "block" : "none" }}
                       >
@@ -841,23 +1082,25 @@
                       {/* 熊本県: Code 43 */}
                       <g 
                         onClick={() => handlePrefectureClick("43")} 
-                        className="kumamoto kyushu kyushu-okinawa prefecture" 
+                        className={`kumamoto kyushu kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 43 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("43")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 43 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 43 ? "3.5" : "1.5"} 
                         transform="translate(115.000000, 800.000000)"
                         style={{ display: isPrefectureVisible("43") ? "block" : "none" }}
                       >
-                        <path d="M8,37 L13,38 L13,48 L5,57 L1,58 L1,52 L5,51 L0,50 L4,40 L3,37 L8,37 Z M20,47 L14,47 L12,43 L19,39 L26,39 L23,47 L20,47 Z M24,34 L26,34 L26,38 L23,38 L24,34 Z M38,67 L33,61 L24,65 L19,61 L32,46 L30,40 L32,41 L31,39 L37,34 L26,34 L34,28 L35,23 L27,15 L26,10 L31,10 L30,7 L35,3 L39,4 L40,0 L48,5 L56,10 L58,7 L57,1 L63,1 L70,14 L69,20 L73,24 L69,24 L60,38 L55,40 L55,47 L60,54 L56,59 L59,65 L38,67 Z"/>
+                        <path d="M38,67 L33,61 L24,65 L19,61 L32,46 L30,40 L32,41 L31,39 L37,34 L26,34 L34,28 L35,23 L27,15 L26,10 L31,10 L30,7 L35,3 L39,4 L40,0 L48,5 L56,10 L58,7 L57,1 L63,1 L70,14 L69,20 L73,24 L69,24 L60,38 L55,40 L55,47 L60,54 L56,59 L59,65 L38,67 Z M8,37 L13,38 L13,48 L5,57 L1,58 L1,52 L5,51 L0,50 L4,40 L3,37 L8,37 Z M20,47 L14,47 L12,43 L19,39 L26,39 L23,47 L20,47 Z M24,34 L26,34 L26,38 L23,38 L24,34 Z"/>
                       </g>
 
                       {/* 長崎県: Code 42 */}
                       <g 
                         onClick={() => handlePrefectureClick("42")} 
-                        className="nagasaki kyushu kyushu-okinawa prefecture" 
+                        className={`nagasaki kyushu kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 42 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("42")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 42 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 42 ? "3.5" : "1.5"} 
                         transform="translate(44.000000, 700.000000)"
                         style={{ display: isPrefectureVisible("42") ? "block" : "none" }}
                       >
@@ -867,10 +1110,12 @@
                       {/* 佐賀県: Code 41 */}
                       <g 
                         onClick={() => handlePrefectureClick("41")} 
-                        className="saga kyushu kyushu-okinawa prefecture" 
+                        className={`saga kyushu kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 41 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("41")} 
                         fillRule="nonzero" 
+                        stroke={selectedCode === 41 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 41 ? "3.5" : "1.5"} 
                         transform="translate(108.000000, 773.000000)"
                         style={{ display: isPrefectureVisible("41") ? "block" : "none" }}
                       >
@@ -880,10 +1125,11 @@
                       {/* 福岡県: Code 40 */}
                       <g 
                         onClick={() => handlePrefectureClick("40")} 
-                        className="fukuoka kyushu kyushu-okinawa prefecture" 
+                        className={`fukuoka kyushu kyushu-okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 40 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("40")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 40 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 40 ? "3.5" : "1.5"} 
                         transform="translate(123.000000, 752.000000)"
                         style={{ display: isPrefectureVisible("40") ? "block" : "none" }}
                       >
@@ -893,10 +1139,11 @@
                       {/* 高知県: Code 39 */}
                       <g 
                         onClick={() => handlePrefectureClick("39")} 
-                        className="kochi shikoku prefecture" 
+                        className={`kochi shikoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 39 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("39")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 39 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 39 ? "3.5" : "1.5"} 
                         transform="translate(251.000000, 765.000000)"
                         style={{ display: isPrefectureVisible("39") ? "block" : "none" }}
                       >
@@ -906,23 +1153,24 @@
                       {/* 愛媛県: Code 38 */}
                       <g 
                         onClick={() => handlePrefectureClick("38")} 
-                        className="ehime shikoku prefecture" 
-                        strokeLinejoin="round" 
-                        fill={getPrefectureColor("38")} 
+                        className={`ehime shikoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 38 ? "animate-pulse" : ""}`} 
                         fillRule="nonzero" 
+                        stroke={selectedCode === 38 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 38 ? "3.5" : "1.5"} 
                         transform="translate(225.000000, 737.000000)"
                         style={{ display: isPrefectureVisible("38") ? "block" : "none" }}
                       >
-                        <path d="M34,21 L31,20 L35,17 L34,21 Z M55,6 L51,6 L55,0 L57,3 L55,6 Z M60,5 L61,5 L60,7 L57,6 L60,5 Z M58,10 L54,12 L55,7 L60,8 L58,10 Z M32,85 L25,83 L25,86 L23,86 L24,81 L27,82 L21,76 L24,76 L22,72 L25,72 L22,71 L23,69 L20,67 L24,70 L28,66 L28,63 L24,63 L27,60 L19,60 L21,57 L19,56 L22,51 L16,50 L8,56 L0,57 L35,37 L41,18 L50,15 L48,11 L51,10 L59,24 L70,20 L80,22 L84,18 L89,20 L87,28 L63,32 L56,41 L53,51 L42,52 L46,61 L41,64 L35,72 L31,69 L34,82 L32,85 Z"/>
+                        <path d="M32,85 L25,83 L25,86 L23,86 L24,81 L27,82 L21,76 L24,76 L22,72 L25,72 L22,71 L23,69 L20,67 L24,70 L28,66 L28,63 L24,63 L27,60 L19,60 L21,57 L19,56 L22,51 L16,50 L8,56 L0,57 L35,37 L41,18 L50,15 L48,11 L51,10 L59,24 L70,20 L80,22 L84,18 L89,20 L87,28 L63,32 L56,41 L53,51 L42,52 L46,61 L41,64 L35,72 L31,69 L34,82 L32,85 Z M34,21 L31,20 L35,17 L34,21 Z M55,6 L51,6 L55,0 L57,3 L55,6 Z M60,5 L61,5 L60,7 L57,6 L60,5 Z M58,10 L54,12 L55,7 L60,8 L58,10 Z"/>
                       </g>
 
                       {/* 香川県: Code 37 */}
                       <g 
                         onClick={() => handlePrefectureClick("37")} 
-                        className="kagawa shikoku prefecture" 
+                        className={`kagawa shikoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 37 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("37")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 37 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 37 ? "3.5" : "1.5"} 
                         transform="translate(308.000000, 724.000000)"
                         style={{ display: isPrefectureVisible("37") ? "block" : "none" }}
                       >
@@ -932,10 +1180,11 @@
                       {/* 徳島県: Code 36 */}
                       <g 
                         onClick={() => handlePrefectureClick("36")} 
-                        className="tokushima shikoku prefecture" 
+                        className={`tokushima shikoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 36 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("36")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 36 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 36 ? "3.5" : "1.5"} 
                         transform="translate(312.000000, 744.000000)"
                         style={{ display: isPrefectureVisible("36") ? "block" : "none" }}
                       >
@@ -945,10 +1194,11 @@
                       {/* 山口県: Code 35 */}
                       <g 
                         onClick={() => handlePrefectureClick("35")} 
-                        className="yamaguchi chugoku prefecture" 
+                        className={`yamaguchi chugoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 35 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("35")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 35 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 35 ? "3.5" : "1.5"} 
                         transform="translate(168.000000, 710.000000)"
                         style={{ display: isPrefectureVisible("35") ? "block" : "none" }}
                       >
@@ -958,10 +1208,11 @@
                       {/* 広島県: Code 34 */}
                       <g 
                         onClick={() => handlePrefectureClick("34")} 
-                        className="hiroshima chugoku prefecture" 
+                        className={`hiroshima chugoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 34 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("34")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 34 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 34 ? "3.5" : "1.5"} 
                         transform="translate(230.000000, 687.000000)"
                         style={{ display: isPrefectureVisible("34") ? "block" : "none" }}
                       >
@@ -971,10 +1222,12 @@
                       {/* 岡山県: Code 33 */}
                       <g 
                         onClick={() => handlePrefectureClick("33")} 
-                        className="okayama chugoku prefecture" 
+                        className={`okayama chugoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 33 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("33")} 
                         fillRule="nonzero" 
+                        stroke={selectedCode === 33 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 33 ? "3.5" : "1.5"} 
                         transform="translate(295.000000, 673.000000)"
                         style={{ display: isPrefectureVisible("33") ? "block" : "none" }}
                       >
@@ -984,10 +1237,10 @@
                       {/* 島根県: Code 32 */}
                       <g 
                         onClick={() => handlePrefectureClick("32")} 
-                        className="shimane chugoku prefecture" 
-                        strokeLinejoin="round" 
-                        fill={getPrefectureColor("32")} 
+                        className={`shimane chugoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 32 ? "animate-pulse" : ""}`} 
                         fillRule="nonzero" 
+                        stroke={selectedCode === 32 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 32 ? "3.5" : "1.5"} 
                         transform="translate(211.000000, 610.000000)"
                         style={{ display: isPrefectureVisible("32") ? "block" : "none" }}
                       >
@@ -997,10 +1250,10 @@
                       {/* 鳥取県: Code 31 */}
                       <g 
                         onClick={() => handlePrefectureClick("31")} 
-                        className="tottori chugoku prefecture" 
-                        strokeLinejoin="round" 
-                        fill={getPrefectureColor("31")} 
+                        className={`tottori chugoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 31 ? "animate-pulse" : ""}`} 
                         fillRule="nonzero" 
+                        stroke={selectedCode === 31 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 31 ? "3.5" : "1.5"} 
                         transform="translate(288.000000, 658.000000)"
                         style={{ display: isPrefectureVisible("31") ? "block" : "none" }}
                       >
@@ -1010,10 +1263,11 @@
                       {/* 和歌山県: Code 30 */}
                       <g 
                         onClick={() => handlePrefectureClick("30")} 
-                        className="wakayama kinki prefecture" 
+                        className={`wakayama kinki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 30 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("30")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 30 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 30 ? "3.5" : "1.5"} 
                         transform="translate(385.000000, 737.000000)"
                         style={{ display: isPrefectureVisible("30") ? "block" : "none" }}
                       >
@@ -1023,10 +1277,11 @@
                       {/* 奈良県: Code 29 */}
                       <g 
                         onClick={() => handlePrefectureClick("29")} 
-                        className="nara kinki prefecture" 
+                        className={`nara kinki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 29 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("29")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 29 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 29 ? "3.5" : "1.5"} 
                         transform="translate(410.000000, 712.000000)"
                         style={{ display: isPrefectureVisible("29") ? "block" : "none" }}
                       >
@@ -1036,35 +1291,39 @@
                       {/* 兵庫県: Code 28 */}
                       <g 
                         onClick={() => handlePrefectureClick("28")} 
-                        className="hyogo kinki prefecture" 
+                        className={`hyogo kinki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 28 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("28")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 28 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 28 ? "3.5" : "1.5"} 
                         transform="translate(345.000000, 655.000000)"
                         style={{ display: isPrefectureVisible("28") ? "block" : "none" }}
                       >
-                        <path d="M31,90 L23,93 L23,88 L20,89 L20,86 L38,67 L39,69 L32,79 L35,88 L31,90 Z M3,59 L4,56 L0,50 L2,47 L1,40 L9,32 L8,26 L14,24 L14,20 L7,3 L16,0 L33,1 L32,5 L36,10 L41,9 L42,11 L42,17 L36,17 L35,23 L42,28 L47,26 L49,33 L59,35 L58,40 L55,41 L56,45 L62,48 L60,49 L62,60 L59,62 L53,60 L40,66 L25,56 L11,57 L11,53 L8,58 L5,56 L3,59 Z"/>
+                        <path d="M3,59 L4,56 L0,50 L2,47 L1,40 L9,32 L8,26 L14,24 L14,20 L7,3 L16,0 L33,1 L32,5 L36,10 L41,9 L42,11 L42,17 L36,17 L35,23 L42,28 L47,26 L49,33 L59,35 L58,40 L55,41 L56,45 L62,48 L60,49 L62,60 L59,62 L53,60 L40,66 L25,56 L11,57 L11,53 L8,58 L5,56 L3,59 Z"/>
                       </g>
 
                       {/* 大阪府: Code 27 */}
                       <g 
                         onClick={() => handlePrefectureClick("27")} 
-                        className="osaka kinki prefecture" 
+                        className={`osaka kinki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 27 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("27")} 
-                        fillRule="nonzero" 
+                        stroke={selectedCode === 27 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 27 ? "3.5" : "1.5"} 
                         transform="translate(387.000000, 695.000000)"
                         style={{ display: isPrefectureVisible("27") ? "block" : "none" }}
                       >
-                        <polygon points="16 0 24 8 28 5 27 8 31 9 34 17 29 28 31 37 29 42 3 48 0 45 7 44 14 37 17 28 19 30 17 22 20 20 18 9 20 8 14 5 13 1"/>
+                        <polygon points="16 0 24 8 28 5 27 8 31 9 34 17 29 28 31 37 29 42 3 48 0 45 7 44 14 37 17 22 20 20 18 9 20 8 14 5 13 1"/>
                       </g>
 
                       {/* 京都府: Code 26 */}
                       <g 
                         onClick={() => handlePrefectureClick("26")} 
-                        className="kyoto kinki prefecture" 
+                        className={`kyoto kinki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 26 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("26")} 
+                        stroke={selectedCode === 26 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 26 ? "3.5" : "1.5"} 
                         transform="translate(377.000000, 649.000000)"
                         style={{ display: isPrefectureVisible("26") ? "block" : "none" }}
                       >
@@ -1074,9 +1333,11 @@
                       {/* 滋賀県: Code 25 */}
                       <g 
                         onClick={() => handlePrefectureClick("25")} 
-                        className="shiga kinki prefecture" 
+                        className={`shiga kinki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 25 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("25")} 
+                        stroke={selectedCode === 25 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 25 ? "3.5" : "1.5"} 
                         transform="translate(423.000000, 655.000000)"
                         style={{ display: isPrefectureVisible("25") ? "block" : "none" }}
                       >
@@ -1086,9 +1347,11 @@
                       {/* 三重県: Code 24 */}
                       <g 
                         onClick={() => handlePrefectureClick("24")} 
-                        className="mie kinki prefecture" 
+                        className={`mie kinki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 24 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("24")} 
+                        stroke={selectedCode === 24 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 24 ? "3.5" : "1.5"} 
                         transform="translate(426.000000, 683.000000)"
                         style={{ display: isPrefectureVisible("24") ? "block" : "none" }}
                       >
@@ -1098,9 +1361,11 @@
                       {/* 静岡県: Code 22 */}
                       <g 
                         onClick={() => handlePrefectureClick("22")} 
-                        className="shizuoka chubu prefecture" 
+                        className={`shizuoka chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 22 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("22")} 
+                        stroke={selectedCode === 22 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 22 ? "3.5" : "1.5"} 
                         transform="translate(511.000000, 659.000000)"
                         style={{ display: isPrefectureVisible("22") ? "block" : "none" }}
                       >
@@ -1110,9 +1375,11 @@
                       {/* 愛知県: Code 23 */}
                       <g 
                         onClick={() => handlePrefectureClick("23")} 
-                        className="aichi chubu prefecture" 
+                        className={`aichi chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 23 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("23")} 
+                        stroke={selectedCode === 23 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 23 ? "3.5" : "1.5"} 
                         transform="translate(469.000000, 673.000000)"
                         style={{ display: isPrefectureVisible("23") ? "block" : "none" }}
                       >
@@ -1122,9 +1389,11 @@
                       {/* 岐阜県: Code 21 */}
                       <g 
                         onClick={() => handlePrefectureClick("21")} 
-                        className="gifu chubu prefecture" 
+                        className={`gifu chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 21 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("21")} 
+                        stroke={selectedCode === 21 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 21 ? "3.5" : "1.5"} 
                         transform="translate(450.000000, 608.000000)"
                         style={{ display: isPrefectureVisible("21") ? "block" : "none" }}
                       >
@@ -1134,9 +1403,11 @@
                       {/* 長野県: Code 20 */}
                       <g 
                         onClick={() => handlePrefectureClick("20")} 
-                        className="nagano chubu prefecture" 
+                        className={`nagano chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 20 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("20")} 
+                        stroke={selectedCode === 20 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 20 ? "3.5" : "1.5"} 
                         transform="translate(503.000000, 572.000000)"
                         style={{ display: isPrefectureVisible("20") ? "block" : "none" }}
                       >
@@ -1146,9 +1417,11 @@
                       {/* 山梨県: Code 19 */}
                       <g 
                         onClick={() => handlePrefectureClick("19")} 
-                        className="yamanashi chubu prefecture" 
+                        className={`yamanashi chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 19 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("19")} 
+                        stroke={selectedCode === 19 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 19 ? "3.5" : "1.5"} 
                         transform="translate(546.000000, 638.000000)"
                         style={{ display: isPrefectureVisible("19") ? "block" : "none" }}
                       >
@@ -1158,9 +1431,11 @@
                       {/* 福井県: Code 18 */}
                       <g 
                         onClick={() => handlePrefectureClick("18")} 
-                        className="fukui chubu prefecture" 
+                        className={`fukui chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 18 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("18")} 
+                        stroke={selectedCode === 18 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 18 ? "3.5" : "1.5"} 
                         transform="translate(408.000000, 618.000000)"
                         style={{ display: isPrefectureVisible("18") ? "block" : "none" }}
                       >
@@ -1170,9 +1445,11 @@
                       {/* 石川県: Code 17 */}
                       <g 
                         onClick={() => handlePrefectureClick("17")} 
-                        className="ishikawa chubu prefecture" 
+                        className={`ishikawa chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 17 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("17")} 
+                        stroke={selectedCode === 17 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 17 ? "3.5" : "1.5"} 
                         transform="translate(448.000000, 541.000000)"
                         style={{ display: isPrefectureVisible("17") ? "block" : "none" }}
                       >
@@ -1182,21 +1459,25 @@
                       {/* 富山県: Code 16 */}
                       <g 
                         onClick={() => handlePrefectureClick("16")} 
-                        className="toyama chubu prefecture" 
+                        className={`toyama chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 16 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("16")} 
+                        stroke={selectedCode === 16 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 16 ? "3.5" : "1.5"} 
                         transform="translate(475.000000, 575.000000)"
                         style={{ display: isPrefectureVisible("16") ? "block" : "none" }}
                       >
-                        <polygon points="41 37 31 33 27 35 27 33 22 35 19 33 10 44 9 40 5 38 1 43 0 35 2 27 1 23 3 20 1 16 4 14 6 4 14 2 11 8 23 15 31 11 33 3 43 0 47 3 50 14 49 25 46 26 47 29"/>
+                        <polygon points="41 37 31 33 27 35 27 33 22 35 19 33 10 44 9 40 5 38 1 L43 0 L47 3 L50 14 L49 25 L46 26 L47 29"/>
                       </g>
 
                       {/* 新潟県: Code 15 */}
                       <g 
                         onClick={() => handlePrefectureClick("15")} 
-                        className="niigata chubu prefecture" 
+                        className={`niigata chubu prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 15 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("15")} 
+                        stroke={selectedCode === 15 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 15 ? "3.5" : "1.5"} 
                         transform="translate(518.000000, 476.000000)"
                         style={{ display: isPrefectureVisible("15") ? "block" : "none" }}
                       >
@@ -1206,9 +1487,11 @@
                       {/* 神奈川県: Code 14 */}
                       <g 
                         onClick={() => handlePrefectureClick("14")} 
-                        className="kanagawa kanto prefecture" 
+                        className={`kanagawa kanto prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 14 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("14")} 
+                        stroke={selectedCode === 14 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 14 ? "3.5" : "1.5"} 
                         transform="translate(584.000000, 656.000000)"
                         style={{ display: isPrefectureVisible("14") ? "block" : "none" }}
                       >
@@ -1218,9 +1501,11 @@
                       {/* 東京都: Code 13 */}
                       <g 
                         onClick={() => handlePrefectureClick("13")} 
-                        className="tokyo kanto prefecture" 
+                        className={`tokyo kanto prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 13 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("13")} 
+                        stroke={selectedCode === 13 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 13 ? "3.5" : "1.5"} 
                         transform="translate(585.000000, 642.000000)"
                         style={{ display: isPrefectureVisible("13") ? "block" : "none" }}
                       >
@@ -1230,9 +1515,11 @@
                       {/* 千葉県: Code 12 */}
                       <g 
                         onClick={() => handlePrefectureClick("12")} 
-                        className="chiba kanto prefecture" 
+                        className={`chiba kanto prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 12 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("12")} 
+                        stroke={selectedCode === 12 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 12 ? "3.5" : "1.5"} 
                         transform="translate(627.000000, 629.000000)"
                         style={{ display: isPrefectureVisible("12") ? "block" : "none" }}
                       >
@@ -1242,9 +1529,11 @@
                       {/* 埼玉県: Code 11 */}
                       <g 
                         onClick={() => handlePrefectureClick("11")} 
-                        className="saitama kanto prefecture" 
+                        className={`saitama kanto prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 11 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("11")} 
+                        stroke={selectedCode === 11 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 11 ? "3.5" : "1.5"} 
                         transform="translate(573.000000, 618.000000)"
                         style={{ display: isPrefectureVisible("11") ? "block" : "none" }}
                       >
@@ -1254,9 +1543,11 @@
                       {/* 群馬県: Code 10 */}
                       <g 
                         onClick={() => handlePrefectureClick("10")} 
-                        className="gunma kanto prefecture" 
+                        className={`gunma kanto prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 10 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("10")} 
+                        stroke={selectedCode === 10 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 10 ? "3.5" : "1.5"} 
                         transform="translate(557.000000, 570.000000)"
                         style={{ display: isPrefectureVisible("10") ? "block" : "none" }}
                       >
@@ -1266,9 +1557,11 @@
                       {/* 栃木県: Code 9 */}
                       <g 
                         onClick={() => handlePrefectureClick("9")} 
-                        className="tochigi kanto prefecture" 
+                        className={`tochigi kanto prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 9 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("9")} 
+                        stroke={selectedCode === 9 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 9 ? "3.5" : "1.5"} 
                         transform="translate(603.000000, 563.000000)"
                         style={{ display: isPrefectureVisible("9") ? "block" : "none" }}
                       >
@@ -1278,9 +1571,11 @@
                       {/* 茨城県: Code 8 */}
                       <g 
                         onClick={() => handlePrefectureClick("8")} 
-                        className="ibaraki kanto prefecture" 
+                        className={`ibaraki kanto prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 8 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("8")} 
+                        stroke={selectedCode === 8 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 8 ? "3.5" : "1.5"} 
                         transform="translate(622.000000, 575.000000)"
                         style={{ display: isPrefectureVisible("8") ? "block" : "none" }}
                       >
@@ -1290,9 +1585,11 @@
                       {/* 福島県: Code 7 */}
                       <g 
                         onClick={() => handlePrefectureClick("7")} 
-                        className="fukushima tohoku prefecture" 
+                        className={`fukushima tohoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 7 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("7")} 
+                        stroke={selectedCode === 7 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 7 ? "3.5" : "1.5"} 
                         transform="translate(594.000000, 511.000000)"
                         style={{ display: isPrefectureVisible("7") ? "block" : "none" }}
                       >
@@ -1302,9 +1599,11 @@
                       {/* 山形県: Code 6 */}
                       <g 
                         onClick={() => handlePrefectureClick("6")} 
-                        className="yamagata tohoku prefecture" 
+                        className={`yamagata tohoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 6 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("6")} 
+                        stroke={selectedCode === 6 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 6 ? "3.5" : "1.5"} 
                         transform="translate(612.000000, 439.000000)"
                         style={{ display: isPrefectureVisible("6") ? "block" : "none" }}
                       >
@@ -1314,9 +1613,11 @@
                       {/* 秋田県: Code 5 */}
                       <g 
                         onClick={() => handlePrefectureClick("5")} 
-                        className="akita tohoku prefecture" 
+                        className={`akita tohoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 5 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("5")} 
+                        stroke={selectedCode === 5 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 5 ? "3.5" : "1.5"} 
                         transform="translate(617.000000, 352.000000)"
                         style={{ display: isPrefectureVisible("5") ? "block" : "none" }}
                       >
@@ -1326,33 +1627,53 @@
                       {/* 宮城県: Code 4 */}
                       <g 
                         onClick={() => handlePrefectureClick("4")} 
-                        className="miyagi tohoku prefecture" 
+                        className={`miyagi tohoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 4 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("4")} 
+                        stroke={selectedCode === 4 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 4 ? "3.5" : "1.5"} 
                         transform="translate(648.000000, 445.000000)"
                         style={{ display: isPrefectureVisible("4") ? "block" : "none" }}
                       >
-                        <path d="M33,70 L29,70 L29,76 L25,76 L26,78 L21,76 L20,70 L11,70 L7,66 L1,66 L0,61 L7,59 L10,53 L9,47 L16,35 L12,24 L15,24 L17,16 L12,8 L16,9 L23,4 L33,9 L41,8 L39,12 L45,16 L49,11 L55,14 L57,0 L64,1 L67,8 L62,5 L63,10 L59,14 L62,19 L60,17 L56,20 L60,22 L57,28 L61,28 L61,32 L58,30 L60,34 L57,35 L58,38 L61,37 L59,39 L61,41 L61,45 L57,43 L58,40 L55,41 L57,39 L56,37 L39,40 L36,43 L40,45 L35,46 L38,47 L32,57 L33,70 Z M43,41 L44,43 L42,43 L43,41 Z"/>
+                        <path d="M33,70 L29,70 L29,76 L25,76 L26,78 L21,76 L20,70 L11,70 L7,66 L1,66 L0,61 L7,59 L10,53 L9,47 L16,35 L12,24 L15,24 L17,16 L12,8 L16,9 L23,4 L33,9 L41,8 L39,12 L45,16 L49,11 L55,14 L57,0 L64,1 L67,8 L62,5 L63,10 L59,14 L62,19 L62,19 L60,17 L56,20 L60,22 L57,28 L61,28 L61,32 L58,30 L60,34 L57,35 L58,38 L61,37 L59,39 L61,41 L61,45 L57,43 L58,40 L55,41 L57,39 L56,37 L39,40 L36,43 L40,45 L35,46 L38,47 L32,57 L33,70 Z M43,41 L44,43 L42,43 L43,41 Z"/>
                       </g>
 
                       {/* 岩手県: Code 3 */}
                       <g 
                         onClick={() => handlePrefectureClick("3")} 
-                        className="iwate tohoku prefecture" 
+                        className={`iwate tohoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 3 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("3")} 
+                        stroke={selectedCode === 3 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 3 ? "3.5" : "1.5"} 
                         transform="translate(664.000000, 354.000000)"
                         style={{ display: isPrefectureVisible("3") ? "block" : "none" }}
                       >
                         <polygon points="48 92 41 91 39 105 33 102 29 107 23 103 25 99 17 100 7 95 8 89 5 84 8 81 0 68 3 57 7 51 5 46 8 42 5 38 10 37 8 19 12 14 16 15 29 5 31 8 35 5 40 7 46 0 54 11 52 16 57 19 55 23 61 28 64 43 62 53 65 49 66 54 68 55 62 60 64 62 67 59 67 63 63 63 63 68 60 69 65 68 60 71 62 73 60 75 64 74 58 81 62 83 57 83 60 86 57 86 59 88 53 89 52 86 54 91 52 91 52 94 50 90"/>
                       </g>
 
+                      {/* 青森県: Code 2 */}
+                      <g 
+                        onClick={() => handlePrefectureClick("2")} 
+                        className={`aomori tohoku prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 2 ? "animate-pulse" : ""}`} 
+                        strokeLinejoin="round" 
+                        fill={getPrefectureColor("2")} 
+                        stroke={selectedCode === 2 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 2 ? "3.5" : "1.5"} 
+                        transform="translate(624.000000, 287.000000)"
+                        style={{ display: isPrefectureVisible("2") ? "block" : "none" }}
+                      >
+                        <polygon points="3 71 3 63 0 60 6 51 12 51 18 47 21 31 17 27 20 26 21 19 27 23 31 20 35 23 37 38 40 45 46 41 45 37 47 33 58 42 61 39 65 23 61 16 55 22 41 25 47 0 64 11 73 6 71 37 73 51 77 62 81 61 86 67 80 74 75 72 71 75 69 72 56 82 52 81 53 70 48 70 48 65 38 72 35 70 32 72 25 67 22 70 10 68 7 72"/>
+                      </g>
+
                       {/* 北海道: Code 1 */}
                       <g 
                         onClick={() => handlePrefectureClick("1")} 
-                        className="hokkaido prefecture" 
+                        className={`hokkaido prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 1 ? "animate-pulse" : ""}`} 
                         strokeLinejoin="round" 
                         fill={getPrefectureColor("1")} 
+                        stroke={selectedCode === 1 ? "#ff4444" : "#000000"} 
+                        strokeWidth={selectedCode === 1 ? "3.5" : "1.5"} 
                         transform="translate(602.000000, 10.000000)"
                         style={{ display: isPrefectureVisible("1") ? "block" : "none" }}
                       >
@@ -1360,7 +1681,7 @@
                       </g>
 
                     </g>
-                    {/* 分割境界線 (明るいグレー・必要時のみ表示) */}
+                    {/* 分割境界線 */}
                     <g className="boundary-line" stroke="#94a3b8" strokeWidth="6" strokeLinejoin="round" style={{ display: showBoundaryLine ? "block" : "none" }}>
                       <line x1="320.227" y1="361.996" stroke="#1e293b" x2="582.351" y2="109.378" />
                       <line x1="277.337" y1="380.162" stroke="#1e293b" x2="46.213" y2="380.162" />
@@ -1368,26 +1689,79 @@
                   </g>
                 </svg>
 
-                {/* クイズゲーム開始・設定パネル (明るいデザイン) */}
+                {/* 四択クイズ・有名なものクイズ用：ボタン選択肢表示エリア */}
+                {quizActive && !quizFinished && (quizMode === "choices" || quizMode === "specialties") && (
+                  <div className="w-full mt-4 bg-slate-50 border border-slate-200 p-4 rounded-3xl z-10 animate-fade-in">
+                    <p className="text-[10px] text-slate-400 font-bold uppercase mb-2 text-center tracking-wider"><ruby>選択肢<rt>せんたくし</rt></ruby>から選んでね！</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      {currentChoices.map((choiceCode) => {
+                        const pref = PREFECTURE_DATA[choiceCode];
+                        const isSelectedChoice = selectedCode === choiceCode;
+                        
+                        return (
+                          <button
+                            key={choiceCode}
+                            onClick={() => handleChoiceButtonClick(choiceCode)}
+                            disabled={!!quizFeedback}
+                            className={`py-3.5 px-4 rounded-xl font-extrabold text-sm sm:text-base border transition-all text-center ${
+                              isSelectedChoice 
+                                ? "bg-red-700 text-white border-red-800 scale-95 shadow-inner" 
+                                : "bg-red-500 hover:bg-red-600 text-white border-red-600 active:scale-95 shadow-md shadow-red-200"
+                            }`}
+                          >
+                            {quizMode === "specialties" ? (
+                              pref?.specialties
+                            ) : (
+                              <ruby>{pref?.name}<rt>{pref?.ruby}</rt></ruby>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* クイズゲーム開始・設定パネル */}
                 {!quizActive && !quizFinished && (
                   <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-6 text-center z-20 backdrop-blur-xs">
                     <div className="bg-white border border-slate-200 p-8 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in">
                       
                       {!showRegionSelect ? (
                         <div>
-                          <span className="text-6xl block mb-6">🎯</span>
                           <h2 className="text-3xl sm:text-4xl font-black text-slate-800 mb-6 tracking-wider">
-                            <ruby>都道府県<rt>とどうふけん</rt></ruby>あてクイズ
+                            ザ・<ruby>都道府県<rt>とどうふけん</rt></ruby>47！
                           </h2>
                           
-                          {/* 👑 累計獲得スコア表示（localStorage対応） */}
-                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 mb-6 text-center max-w-md mx-auto">
+                          {/* 👑 累計獲得スコア表示 */}
+                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 mb-4 text-center max-w-md mx-auto">
                             <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center justify-center gap-1.5">
-                              👑 <ruby>累計獲得スコア<rt>るいけいかくとくすこあ</rt></ruby>
+                              👑 <ruby>累計獲得<rt>るいけいかくとく</rt></ruby>スコア
                             </h4>
                             <p className="text-3xl font-black text-rose-500">
-                              {totalScore.toLocaleString()} <ruby>点<rt>てん</rt></ruby>
+                              {totalScore.toLocaleString()} 点
                             </p>
+                          </div>
+
+                          {/* クイズ形式選択タブ */}
+                          <div className="bg-slate-100 p-1.5 rounded-2xl flex flex-wrap gap-1 mb-6 border border-slate-200 max-w-md mx-auto text-xs font-black">
+                            <button 
+                              onClick={() => setQuizChoiceMode("touch")}
+                              className={`flex-1 min-w-[80px] py-2 px-3 rounded-xl transition-all ${quizMode === "touch" ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                            >
+                              🗺️ タッチ
+                            </button>
+                            <button 
+                              onClick={() => setQuizChoiceMode("choices")}
+                              className={`flex-1 min-w-[80px] py-2 px-3 rounded-xl transition-all ${quizMode === "choices" ? "bg-white text-rose-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                            >
+                              🔢 <ruby>四択<rt>よんたく</rt></ruby>
+                            </button>
+                            <button 
+                              onClick={() => setQuizChoiceMode("specialties")}
+                              className={`flex-1 min-w-[80px] py-2 px-3 rounded-xl transition-all ${quizMode === "specialties" ? "bg-white text-amber-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                            >
+                              🎁 <ruby>有名<rt>ゆうめい</rt></ruby>なもの
+                            </button>
                           </div>
 
                           <div className="flex flex-col gap-4">
@@ -1415,13 +1789,9 @@
                               const isHighlighted = rouletteKey === key;
                               const isFinal = finalSelectedKey === key;
                               
-                              let btnClass = "bg-slate-100 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 border border-slate-200 hover:border-emerald-300";
-                              if (isHighlighted) {
-                                btnClass = "bg-yellow-300 text-yellow-950 border-yellow-400 scale-105 shadow-md shadow-yellow-200/50";
-                              }
-                              if (isFinal) {
-                                btnClass = "bg-amber-400 text-slate-900 border-amber-500 scale-110 shadow-lg shadow-amber-300 ring-4 ring-amber-300 ring-offset-2 animate-bounce";
-                              }
+                              let btnClass = `btn-region-${key} border border-transparent`;
+                              if (isHighlighted) { btnClass = "bg-yellow-300 text-yellow-950 border-yellow-400 scale-105 shadow-md shadow-yellow-200/50"; }
+                              if (isFinal) { btnClass = "bg-amber-400 text-slate-900 border-amber-500 scale-110 shadow-lg shadow-amber-300 ring-4 ring-amber-300 ring-offset-2 animate-bounce"; }
                               
                               return (
                                 <button 
@@ -1431,6 +1801,9 @@
                                   className={`${btnClass} font-extrabold py-3.5 px-4 rounded-xl transition-all text-sm sm:text-base text-center`}
                                 >
                                   <ruby>{group.name}<rt>{group.ruby}</rt></ruby>
+                                  <div className="text-[10px] opacity-80 mt-0.5 font-bold">
+                                    👑 ベスト: {regionBestScores[key] || 0}点
+                                  </div>
                                 </button>
                               );
                             })}
@@ -1447,12 +1820,13 @@
                               )}
                             </button>
                           </div>
+                          
                           <button 
                             disabled={isRouletteActive}
                             onClick={() => setShowRegionSelect(false)}
-                            className={`text-slate-500 hover:text-slate-800 font-bold text-sm ${isRouletteActive ? "opacity-30 cursor-not-allowed" : ""}`}
+                            className={`w-full max-w-xs mx-auto block bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold py-3 px-4 rounded-xl transition-all text-sm sm:text-base text-center border border-rose-100 active:scale-95 ${isRouletteActive ? "opacity-30 cursor-not-allowed" : ""}`}
                           >
-                            🔙 <ruby>戻<rt>もど</rt></ruby>る
+                            🔙 <ruby>戻る<rt>もどる</rt></ruby>
                           </button>
                         </div>
                       )}
@@ -1463,8 +1837,7 @@
               </section>
             )}
 
-            {/* 右側：コントロールパネル / リザルト (リザルト時は中央全幅に拡大) */}
-            {}
+            {/* 右側：コントロールパネル / リザルト */}
             <aside className={quizFinished ? "lg:col-span-12 max-w-2xl mx-auto w-full" : "lg:col-span-5 flex flex-col gap-6 w-full"}>
               
               {/* クイズ進行中ステータス */}
@@ -1475,12 +1848,6 @@
                       <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block animate-ping"></span>
                       クイズに<ruby>挑戦中<rt>ちょうせんちゅう</rt></ruby>！
                     </h3>
-                    <button 
-                      onClick={() => endQuiz(false)}
-                      className="text-red-500 hover:text-red-600 bg-red-50 hover:bg-red-100 text-xs font-bold px-3 py-1.5 rounded-xl transition-colors"
-                    >
-                      ← <ruby>戻<rt>もど</rt></ruby>る
-                    </button>
                   </div>
 
                   {/* 進捗プログレス */}
@@ -1500,33 +1867,42 @@
                   {/* 得点ルール */}
                   <div className="text-xs text-slate-500 flex flex-col gap-1 border-t border-slate-100 pt-4">
                     <span className="font-bold text-slate-700">💡 <ruby>得点<rt>とくてん</rt></ruby>のヒミツ:</span>
-                    <span>・1<ruby>問正解<rt>もんせいかい</rt></ruby>ごとにベース 10 ポイント<ruby>加算<rt>かさん</rt></ruby>されます。</span>
-                    <span>・コンボ（<ruby>連撃<rt>れんげき</rt></ruby>）が<ruby>続<rt>つづ</rt></ruby>くと<ruby>加算<rt>かさん</rt></ruby>ポイントが<ruby>徐々<rt>じょじょ</rt></ruby>にアップします。</span>
+                    <span>・1<ruby>問正解<rt>もんせいかい</rt></ruby>ごとにベース 10 ポイント<ruby>加算<rt>加算</rt></ruby>されます。</span>
+                    <span>・コンボ（<ruby>連撃<rt>れんげき</rt></ruby>）が<ruby>続<rt>つづ</rt></ruby>ると<ruby>加算<rt>かさん</rt></ruby>ポイントが<ruby>徐々<rt>じょじょ</rt></ruby>にアップします。</span>
                     <span>・タイムアップ（30<ruby>秒経過<rt>びょうけいか</rt></ruby>）になると<ruby>自動<rt>じどう</rt></ruby>で<ruby>次<rt>つぎ</rt></ruby>の<ruby>問題<rt>もんだい</rt></ruby>に<ruby>移<rt>うつ</rt></ruby>ります。</span>
                   </div>
                 </div>
               )}
 
               {/* クイズ終了時のリザルト結果画面 */}
-              {}
               {quizFinished && (
                 <div className="bg-white border border-slate-200 rounded-[2.5rem] p-8 shadow-md flex flex-col gap-6 animate-fade-in max-w-2xl mx-auto w-full">
                   <div className="text-center">
-                    {/* 🎉 クイズ結果発表！ ヘッダーを完全に非表示に変更 */}
                     {selectedRegionKey && REGION_GROUPS[selectedRegionKey] ? (
                       <p className="text-xl sm:text-2xl font-black text-slate-700">
                         【<ruby>{REGION_GROUPS[selectedRegionKey].name}<rt>{REGION_GROUPS[selectedRegionKey].ruby}</rt></ruby>】<ruby>地方挑戦<rt>ちほうちょうせん</rt></ruby>お<ruby>疲<rt>つか</rt></ruby>れさまでした！
                       </p>
                     ) : (
                       <p className="text-xl sm:text-2xl font-black text-slate-700">
-                        15<ruby>問<rt>もん</rt></ruby>のチャレンジお<ruby>疲<rt>つか</rt></ruby>れさまでした！
+                        15<ruby>問<rt>もん</rt></ruby>のチャレンジお疲れさまでした！
                       </p>
                     )}
                   </div>
 
-                  {/* 🎊 くす玉が割れるオリジナルCSS/SVGアニメーション (新記録達成時のみ) */}
+                  {/* 🎊 くす玉が割れるオリジナルCSS/SVGアニメーション */}
                   {showKusudama && (
-                    <div className="flex flex-col items-center justify-center my-6 relative h-64 overflow-hidden bg-gradient-to-b from-amber-50/50 to-white rounded-3xl border border-amber-100 shadow-inner py-4">
+                    <div 
+                      className="flex flex-col items-center justify-center relative overflow-hidden bg-gradient-to-b from-amber-50/50 to-white rounded-3xl border border-amber-100 shadow-inner transition-all duration-1000 ease-in-out"
+                      style={{ 
+                        opacity: kusudamaFadeOut ? 0 : 1, 
+                        height: kusudamaFadeOut ? "0px" : "256px",
+                        marginTop: kusudamaFadeOut ? "0px" : "24px",
+                        marginBottom: kusudamaFadeOut ? "0px" : "24px",
+                        paddingTop: kusudamaFadeOut ? "0px" : "16px",
+                        paddingBottom: kusudamaFadeOut ? "0px" : "16px",
+                        borderWidth: kusudamaFadeOut ? "0px" : "1px"
+                      }}
+                    >
                       {/* 紐 */}
                       <div className="w-1 h-10 bg-slate-400 absolute top-0"></div>
                       
@@ -1534,25 +1910,29 @@
                       <div className="relative w-36 h-36 flex justify-center items-center mt-6">
                         {/* 左半球 */}
                         <div 
-                          className="absolute left-0 w-[72px] h-[144px] bg-gradient-to-r from-amber-300 to-amber-500 border-r-2 border-yellow-300 rounded-l-full origin-right transition-all duration-1000 ease-out shadow-md z-20"
-                          style={{ transform: isKusudamaOpen ? "translateX(-60px) rotate(-35deg)" : "translateX(0) rotate(0deg)" }}
+                          className="absolute left-0 w-[72px] h-[144px] bg-gradient-to-r from-amber-300 to-amber-500 border-r-2 border-yellow-300 rounded-l-full origin-right transition-all duration-[1200ms] ease-out shadow-md z-20"
+                          style={{ 
+                            transform: isKusudamaOpen ? "translateX(-120px) rotate(-45deg) scale(0.7)" : "translateX(0) rotate(0deg) scale(1)",
+                            opacity: isKusudamaOpen ? 0.1 : 1
+                          }}
                         >
-                          {/* 装飾の房 */}
                           <div className="absolute bottom-2 left-2 w-3 h-8 bg-red-500 rounded-full origin-top transform rotate-12"></div>
                         </div>
 
                         {/* 右半球 */}
                         <div 
-                          className="absolute right-0 w-[72px] h-[144px] bg-gradient-to-l from-amber-300 to-amber-500 border-l-2 border-yellow-300 rounded-r-full origin-left transition-all duration-1000 ease-out shadow-md z-20"
-                          style={{ transform: isKusudamaOpen ? "translateX(60px) rotate(35deg)" : "translateX(0) rotate(0deg)" }}
+                          className="absolute right-0 w-[72px] h-[144px] bg-gradient-to-l from-amber-300 to-amber-500 border-l-2 border-yellow-300 rounded-r-full origin-left transition-all duration-[1200ms] ease-out shadow-md z-20"
+                          style={{ 
+                            transform: isKusudamaOpen ? "translateX(120px) rotate(45deg) scale(0.7)" : "translateX(0) rotate(0deg) scale(1)",
+                            opacity: isKusudamaOpen ? 0.1 : 1
+                          }}
                         >
-                          {/* 装飾の房 */}
                           <div className="absolute bottom-2 right-2 w-3 h-8 bg-red-500 rounded-full origin-top transform -rotate-12"></div>
                         </div>
                         
-                        {/* 垂れ幕 (くす玉が開いたらふわっと下りてくる) */}
+                        {/* 垂れ幕 */}
                         <div 
-                          className="absolute top-4 w-44 bg-gradient-to-b from-red-500 to-red-600 text-white font-black text-center shadow-lg border-2 border-yellow-300 rounded-b-xl flex flex-col justify-between py-3 z-10 transition-all duration-1000 ease-out overflow-hidden" 
+                          className="absolute top-4 w-44 bg-gradient-to-b from-red-500 to-red-600 text-white font-black text-center shadow-lg border-2 border-yellow-300 rounded-b-xl flex flex-col justify-between py-3 z-30 transition-all duration-1000 ease-out overflow-hidden" 
                           style={{ 
                             opacity: isKusudamaOpen ? 1 : 0, 
                             height: isKusudamaOpen ? "140px" : "0", 
@@ -1564,14 +1944,14 @@
                           <h4 className="text-lg tracking-wider text-white font-extrabold my-1">
                             <ruby>新記録達成<rt>しんきろくたっせい</rt></ruby>！
                           </h4>
-                          <p className="text-[10px] text-yellow-100"><ruby>おめでとうございます<rt>おめでとうございます</rt></ruby>！</p>
+                          <p className="text-[10px] text-yellow-100">おめでとうございます！</p>
                         </div>
                       </div>
                     </div>
                   )}
 
-                  {/* 新記録のハイライト表示パネル (どの記録が更新されたかを大きく表示) */}
-                  {(newRecords.score || newRecords.correct || newRecords.combo) && (
+                  {/* 新記録お祝いパネル */}
+                  {(newRecords.score || newRecords.correct || newRecords.combo || newRecords.time) && (
                     <div className="bg-amber-50 border-2 border-amber-300 rounded-3xl p-6 text-center flex flex-col items-center gap-2 animate-pulse my-2">
                       <span className="text-3xl">🎉</span>
                       <h4 className="text-2xl font-black text-amber-600 flex gap-1">
@@ -1579,30 +1959,41 @@
                       </h4>
                       <div className="flex flex-col gap-2 mt-2 w-full max-w-sm">
                         {newRecords.score && (
-                          <div className="flex justify-between items-center bg-white px-4 py-2 rounded-xl shadow-xs border border-amber-100">
-                            <span className="text-xs font-bold text-slate-500">✨ <ruby>獲得スコア更新<rt>かくとくすこあこうしん</rt></ruby>！</span>
-                            <span className="text-lg font-black text-rose-500">{score} <ruby>点<rt>てん</rt></ruby></span>
+                          <div className="flex justify-between items-center bg-white px-4 py-2 rounded-xl border border-amber-100">
+                            <span className="text-xs font-bold text-slate-500">✨ <ruby>獲得<rt>かくとく</rt></ruby>スコア<ruby>更新<rt>point_ruby</rt></ruby>！</span>
+                            <span className="text-lg font-black text-rose-500">{score} 点</span>
                           </div>
                         )}
                         {newRecords.correct && (
-                          <div className="flex justify-between items-center bg-white px-4 py-2 rounded-xl shadow-xs border border-amber-100">
+                          <div className="flex justify-between items-center bg-white px-4 py-2 rounded-xl border border-amber-100">
                             <span className="text-xs font-bold text-slate-500">✨ <ruby>正解数更新<rt>せいかいすうこうしん</rt></ruby>！</span>
                             <span className="text-lg font-black text-emerald-600">{correctAnswers} / {maxQuestions} <ruby>問<rt>もん</rt></ruby></span>
                           </div>
                         )}
                         {newRecords.combo && (
-                          <div className="flex justify-between items-center bg-white px-4 py-2 rounded-xl shadow-xs border border-amber-100">
+                          <div className="flex justify-between items-center bg-white px-4 py-2 rounded-xl border border-amber-100">
                             <span className="text-xs font-bold text-slate-500">✨ <ruby>連続正解数更新<rt>れんぞくせいかいすうこうしん</rt></ruby>！</span>
-                            <span className="text-lg font-black text-amber-500">{maxCombo} <ruby>コンボ<rt>こんぼ</rt></ruby></span>
+                            <span className="text-lg font-black text-amber-500">{maxCombo} 連続</span>
+                          </div>
+                        )}
+                        {newRecords.time && (
+                          <div className="flex justify-between items-center bg-white px-4 py-2 rounded-xl border border-amber-100">
+                            <span className="text-xs font-bold text-slate-500">✨ かかった時間更新！</span>
+                            <span className="text-lg font-black text-blue-500">
+                              {(() => {
+                                const sec = elapsedTime / 1000;
+                                return sec <= 10 ? `${sec.toFixed(1)}秒` : `${Math.round(sec)}秒`;
+                              })()}
+                            </span>
                           </div>
                         )}
                       </div>
                     </div>
                   )}
 
-                  {/* 評価パネル */}
+                  {/* 称号評価 */}
                   <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200 text-center">
-                    <p className="text-xs text-slate-400 font-bold uppercase tracking-wider">あなたに<ruby>贈<rt>おく</rt></ruby>る<ruby>称号<rt>しょうごう</rt></ruby></p>
+                    <p className="text-xs text-slate-400 font-bold uppercase tracking-wider"><ruby>称号<rt>しょうごう</rt></ruby></p>
                     <h4 className={`text-2xl sm:text-3xl font-black mt-2 ${getRankEvaluator().color}`}>
                       {getRankEvaluator().title}
                     </h4>
@@ -1611,23 +2002,32 @@
                     </p>
                   </div>
 
-                  {/* 詳細スタッツ */}
+                  {/* 詳細スタッツ 2×2 */}
                   <div className="grid grid-cols-2 gap-4">
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center">
                       <p className="text-xs text-slate-400 font-bold uppercase"><ruby>獲得<rt>かくとく</rt></ruby>スコア</p>
-                      <span className="text-2xl font-black text-rose-500">{score} <ruby>点<rt>てん</rt></ruby></span>
+                      <span className="text-2xl font-black text-rose-500">{score} 点</span>
                     </div>
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center">
                       <p className="text-xs text-slate-400 font-bold uppercase"><ruby>正解数<rt>せいかいすう</rt></ruby> / <ruby>出題数<rt>しゅつだいすう</rt></ruby></p>
-                      <span className="text-2xl font-black text-emerald-600">{correctAnswers} / {maxQuestions}<ruby>問<rt>もん</rt></ruby></span>
+                      <span className="text-2xl font-black text-emerald-600">{correctAnswers} / {maxQuestions}問</span>
                     </div>
-                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 col-span-2 text-center">
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center">
                       <p className="text-xs text-slate-400 font-bold uppercase"><ruby>連続正解数<rt>れんぞくせいかいすう</rt></ruby></p>
-                      <span className="text-2xl font-black text-amber-500">{maxCombo} <ruby>コンボ<rt>こんぼ</rt></ruby></span>
+                      <span className="text-2xl font-black text-amber-500">{maxCombo} 連続</span>
+                    </div>
+                    <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 text-center">
+                      <p className="text-xs text-slate-400 font-bold uppercase">かかった時間</p>
+                      <span className="text-2xl font-black text-blue-500">
+                        {(() => {
+                          const sec = elapsedTime / 1000;
+                          return sec <= 10 ? `${sec.toFixed(1)}秒` : `${Math.round(sec)}秒`;
+                        })()}
+                      </span>
                     </div>
                   </div>
 
-                  {/* 再挑戦ボタン */}
+                  {/* アクションボタン */}
                   <div className="flex flex-col gap-2 mt-2">
                     <button 
                       onClick={() => startQuiz(quizDifficulty, selectedRegionKey)}
@@ -1642,7 +2042,7 @@
                       }}
                       className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-4 px-6 rounded-2xl transition-all text-sm sm:text-base text-center border border-slate-200"
                     >
-                      🏠 ホームに<ruby>戻<rt>もど</rt></ruby>る
+                      🏠 ホームに戻る
                     </button>
                   </div>
                 </div>
@@ -1651,17 +2051,6 @@
             </aside>
           </main>
 
-          {/* フッター */}
-          <footer className="bg-white border-t border-slate-200 py-6 px-6 text-center text-xs text-slate-400">
-            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4">
-              <p>© 2026 Japan Map Quiz. All Rights Reserved.</p>
-              <div className="flex gap-4">
-                <a href="https://geolonia.com/" target="_blank" rel="noopener noreferrer" className="hover:underline text-rose-500">Geolonia <ruby>地図<rt>ちず</rt></ruby>データ<ruby>参照<rt>さんしょう</rt></ruby></a>
-                <span>|</span>
-                <span className="text-slate-500 font-semibold">クリーン ＆ <ruby>明<rt>あか</rt></ruby>るいテーマで<ruby>学<rt>まな</rt></ruby>ぶ<ruby>日本地理<rt>にほんちり</rt></ruby></span>
-              </div>
-            </div>
-          </footer>
         </div>
       );
     }
