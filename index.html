@@ -21,7 +21,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght=300;400;500;700;900&display=swap" rel="stylesheet">
   
   <style>
-    body { font-family: 'Noto Sans JP', sans-serif; }
+    body { font-family: 'Noto Sans JP', sans-serif; overflow-x: hidden; }
     .svg-map path, .svg-map polygon { transition: fill 0.2s ease, stroke 0.2s ease, transform 0.1s ease; cursor: pointer; }
     .svg-map g.prefecture:hover path, .svg-map g.prefecture:hover polygon { filter: brightness(0.95); }
     .svg-map g.prefecture { stroke: #000000 !important; stroke-width: 1.5px !important; }
@@ -44,7 +44,7 @@
     .btn-region-kyushu_okinawa:hover { background-color: #bfdbfe !important; }
   </style>
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
+<body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col justify-between">
   <div id="root" class="flex-1 flex flex-col"></div>
 
   <script type="text/babel">
@@ -188,7 +188,9 @@
         </React.Fragment>
       ));
     };
+  </script>
 
+  <script type="text/babel">
     function App() {
       const [user, setUser] = useState(null);
       const [loading, setLoading] = useState(true);
@@ -273,6 +275,7 @@
       const [currentTarget, setCurrentTarget] = useState(null);
       const [quizQueue, setQuizQueue] = useState([]);
       const [score, setScore] = useState(0);
+      const scoreRef = useRef(0);
       const [combo, setCombo] = useState(0);
       const [maxCombo, setMaxCombo] = useState(0);
       const [totalQuestions, setTotalQuestions] = useState(0);
@@ -301,7 +304,7 @@
       const isCapitalUnlocked = perfectRegionCount >= 7;
       const isCapitalInputUnlocked = !!national47Perfect;
 
-      const backupToCloud = async (customId = saveId) => {
+      const backupToCloud = async (customId = saveId, updatedTotalScore = null) => {
         if (!firebaseAvailable || !db || !firebaseConfig || !firebaseConfig.apiKey) {
           setBackupStatus("⚠️ クラウドセーブ機能は現在オフラインです。");
           return;
@@ -312,7 +315,7 @@
           }
           const statsPayload = {
             saveId: customId,
-            totalScore,
+            totalScore: updatedTotalScore !== null ? updatedTotalScore : totalScore,
             bestScore,
             bestCorrect,
             bestCombo,
@@ -398,37 +401,29 @@
         }
       };
 
-      const copySaveId = () => {
-        try {
-          const tempInput = document.createElement("input");
-          tempInput.value = saveId;
-          document.body.appendChild(tempInput);
-          tempInput.select();
-          document.execCommand("copy");
-          document.body.removeChild(tempInput);
-          setBackupStatus("🟢 コピーしました！");
-        } catch (e) {
-          setBackupStatus("❌ コピーに失敗しました。");
+      // おすすめ（弱点克服）モード等も含めたアクティブな地方キーの算出
+      const effectiveRegionKey = useMemo(() => {
+        if (rouletteKey) return rouletteKey;
+        if (quizActive && quizRecommendedActive && currentTarget) {
+          return Object.keys(REGION_GROUPS).find(key => REGION_GROUPS[key].prefs.includes(parseInt(currentTarget.code, 10))) || null;
         }
-      };
+        return selectedRegionKey;
+      }, [rouletteKey, quizActive, quizRecommendedActive, currentTarget, selectedRegionKey]);
 
       const currentViewBox = useMemo(() => {
-        const activeKey = rouletteKey || selectedRegionKey;
-        if (activeKey && REGION_GROUPS[activeKey]) { return REGION_GROUPS[activeKey].viewBox; }
+        if (effectiveRegionKey && REGION_GROUPS[effectiveRegionKey]) { return REGION_GROUPS[effectiveRegionKey].viewBox; }
         return "0 0 1000 1000";
-      }, [selectedRegionKey, rouletteKey]);
+      }, [effectiveRegionKey]);
 
       const isPrefectureVisible = (code) => {
-        const activeKey = rouletteKey || selectedRegionKey;
-        if (!activeKey || !REGION_GROUPS[activeKey]) { return true; }
-        return REGION_GROUPS[activeKey].prefs.includes(parseInt(code, 10));
+        if (!effectiveRegionKey || !REGION_GROUPS[effectiveRegionKey]) { return true; }
+        return REGION_GROUPS[effectiveRegionKey].prefs.includes(parseInt(code, 10));
       };
 
       const showBoundaryLine = useMemo(() => {
-        const activeKey = rouletteKey || selectedRegionKey;
-        if (!activeKey) return true;
-        return activeKey === "hokkaido_tohoku" || activeKey === "kyushu_okinawa";
-      }, [selectedRegionKey, rouletteKey]);
+        if (!effectiveRegionKey) return true;
+        return effectiveRegionKey === "hokkaido_tohoku" || effectiveRegionKey === "kyushu_okinawa";
+      }, [effectiveRegionKey]);
 
       const getPrefectureColor = (code) => {
         const pref = PREFECTURE_DATA[code];
@@ -478,21 +473,28 @@
           setQuizFinished(true);
           const duration = quizStartTimeRef.current ? Date.now() - quizStartTimeRef.current : 0;
           setElapsedTime(duration);
-          const newTotalScore = totalScore + score;
+          
+          const currentQuizScore = scoreRef.current;
+          let calculatedTotal = 0;
+          setTotalScore(prevTotal => {
+            calculatedTotal = prevTotal + currentQuizScore;
+            safeSetLocalStorage("japan_map_quiz_total_score", calculatedTotal.toString());
+            return calculatedTotal;
+          });
           
           let isNewScore = false; let updatedBestScore = bestScore; const updatedRegionBestScores = { ...regionBestScores };
           if (selectedRegionKey) {
             const currentRegionBest = regionBestScores[selectedRegionKey] || 0;
-            isNewScore = score > currentRegionBest;
+            isNewScore = currentQuizScore > currentRegionBest;
             if (isNewScore) {
-              updatedRegionBestScores[selectedRegionKey] = score; setRegionBestScores(updatedRegionBestScores);
-              safeSetLocalStorage(`japan_map_quiz_best_score_${selectedRegionKey}`, score.toString());
+              updatedRegionBestScores[selectedRegionKey] = currentQuizScore; setRegionBestScores(updatedRegionBestScores);
+              safeSetLocalStorage(`japan_map_quiz_best_score_${selectedRegionKey}`, currentQuizScore.toString());
             }
           } else {
-            isNewScore = score > bestScore;
+            isNewScore = currentQuizScore > bestScore;
             if (isNewScore) {
-              updatedBestScore = score; setBestScore(score);
-              safeSetLocalStorage("japan_map_quiz_best_score", score.toString());
+              updatedBestScore = currentQuizScore; setBestScore(currentQuizScore);
+              safeSetLocalStorage("japan_map_quiz_best_score", currentQuizScore.toString());
             }
           }
 
@@ -551,15 +553,14 @@
           const updatedBestCombo = isNewCombo ? maxCombo : bestCombo;
 
           setNewRecords({ score: isNewScore, correct: isNewCorrect, combo: isNewCombo, time: isNewTime });
-          safeSetLocalStorage("japan_map_quiz_total_score", newTotalScore.toString());
           safeSetLocalStorage("japan_map_quiz_best_correct", updatedBestCorrect.toString());
           safeSetLocalStorage("japan_map_quiz_best_combo", updatedBestCombo.toString());
           safeSetLocalStorage("japan_map_quiz_best_time", updatedBestTime.toString());
-          setTotalScore(newTotalScore); setBestScore(updatedBestScore);
+          setBestScore(updatedBestScore);
           setBestCorrect(updatedBestCorrect); setBestCombo(updatedBestCombo); setBestTime(updatedBestTime);
 
           if (firebaseAvailable && db && firebaseConfig && firebaseConfig.apiKey) {
-            backupToCloud();
+            backupToCloud(saveId, calculatedTotal);
           }
 
           if (hasNew) {
@@ -603,7 +604,7 @@
           slicedQueue = shuffled.slice(0, nationalQuestionCount || 15);
         }
 
-        setQuizQueue(slicedQueue); setScore(0); setCombo(0); setMaxCombo(0);
+        setQuizQueue(slicedQueue); scoreRef.current = 0; setScore(0); setCombo(0); setMaxCombo(0);
         setTotalQuestions(0); setCorrectAnswers(0); correctAnswersRef.current = 0; setQuizActive(true); setQuizFinished(false);
         setQuizFeedback(null); setSelectedCode(null); setShowRegionSelect(false); setShowNationalSelect(false);
         setUserInputValue("");
@@ -669,7 +670,9 @@
           if (newCombo > maxCombo) { setMaxCombo(newCombo); }
           setCorrectAnswers(prev => prev + 1);
           correctAnswersRef.current += 1;
-          setScore(prev => prev + 10 + (newCombo > 2 ? newCombo * 2 : 0));
+          const pointsGained = 10 + (newCombo > 2 ? newCombo * 2 : 0);
+          scoreRef.current += pointsGained;
+          setScore(scoreRef.current);
           
           const feedbackMsg = quizMode === "specialties" ? (
             <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の有名なものはその通りです！</span>
@@ -725,7 +728,9 @@
           if (newCombo > maxCombo) { setMaxCombo(newCombo); }
           setCorrectAnswers(prev => prev + 1);
           correctAnswersRef.current += 1;
-          setScore(prev => prev + 10 + (newCombo > 2 ? newCombo * 2 : 0));
+          const pointsGained = 10 + (newCombo > 2 ? newCombo * 2 : 0);
+          scoreRef.current += pointsGained;
+          setScore(scoreRef.current);
           
           const feedbackMsg = (
             <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の県庁所在地は【<ruby>{currentTarget.capital}<rt>{currentTarget.capitalRuby}</rt></ruby>】です！</span>
@@ -774,7 +779,9 @@
           if (newCombo > maxCombo) { setMaxCombo(newCombo); }
           setCorrectAnswers(prev => prev + 1);
           correctAnswersRef.current += 1;
-          setScore(prev => prev + 10 + (newCombo > 2 ? newCombo * 2 : 0));
+          const pointsGained = 10 + (newCombo > 2 ? newCombo * 2 : 0);
+          scoreRef.current += pointsGained;
+          setScore(scoreRef.current);
           
           const feedbackMsg = (
             <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の県庁所在地は【<ruby>{currentTarget.capital}<rt>{currentTarget.capitalRuby}</rt></ruby>】です！</span>
@@ -848,8 +855,8 @@
       const currentChoices = useMemo(() => {
         if (!currentTarget || (quizMode === "touch" || quizMode === "capitalInput")) return [];
         let pool = [];
-        if (selectedRegionKey && REGION_GROUPS[selectedRegionKey]) {
-          pool = REGION_GROUPS[selectedRegionKey].prefs;
+        if (effectiveRegionKey && REGION_GROUPS[effectiveRegionKey]) {
+          pool = REGION_GROUPS[effectiveRegionKey].prefs;
         } else {
           pool = Object.keys(PREFECTURE_DATA).map(Number);
         }
@@ -860,7 +867,7 @@
           choicesSet.add(randPref);
         }
         return Array.from(choicesSet).sort(() => Math.random() - 0.5);
-      }, [currentTarget, quizMode, selectedRegionKey]);
+      }, [currentTarget, quizMode, effectiveRegionKey]);
 
       useEffect(() => {
         if (quizActive && timeLeft > 0 && !quizFeedback && !quizFinished) {
@@ -908,6 +915,7 @@
             {!quizFinished && (
               <section className={`lg:col-span-7 bg-white border border-slate-200 rounded-[2rem] sm:rounded-[2.5rem] ${quizActive ? 'p-3 sm:p-4 gap-1' : 'p-4 md:p-6 justify-between min-h-[500px] lg:min-h-[580px]'} shadow-sm flex flex-col items-stretch relative w-full`}>
                 
+                {}
                 {quizActive && !quizFinished && (
                   <div className="sticky top-0 bg-white/95 backdrop-blur-md border-b border-slate-100 py-1.5 sm:py-2 px-3 sm:px-4 -mx-3 sm:-mx-4 md:-mx-6 mb-1 z-30 w-full flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-4 transition-all duration-300">
                     <div className="flex-1">
@@ -1013,10 +1021,11 @@
                   </div>
                 )}
 
+                {}
                 <svg className={`geolonia-svg-map w-full ${quizActive ? 'h-[260px] sm:h-[320px] md:h-[360px] lg:h-[380px]' : 'h-[480px] md:h-[520px]'} transition-all duration-500 ease-in-out`} viewBox={currentViewBox} xmlns="http://www.w3.org/2000/svg">
                   <g className="svg-map" transform="matrix(1.028807, 0, 0, 1.028807, -47.544239, -28.806583)">
                     <g className="prefectures" transform="matrix(1, 0, 0, 1, 6, 18)">
-                      <g onClick={() => handlePrefectureClick("47")} className={`okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 47 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("47")} fillRule="nonzero" stroke={selectedCode === 47 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 47 ? "3.5" : "1.5"} transform={selectedRegionKey === "kyushu_okinawa" || rouletteKey === "kyushu_okinawa" ? "translate(-80, 1040) scale(0.5)" : "translate(52, 193)"} style={{ display: isPrefectureVisible("47") ? "block" : "none" }}>
+                      <g onClick={() => handlePrefectureClick("47")} className={`okinawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 47 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("47")} fillRule="nonzero" stroke={selectedCode === 47 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 47 ? "3.5" : "1.5"} transform={effectiveRegionKey === "kyushu_okinawa" ? "translate(-80, 1040) scale(0.5)" : "translate(52, 193)"} style={{ display: isPrefectureVisible("47") ? "block" : "none" }}>
                         <polygon points="4 109 6 110 4 111 0 110"/><polygon points="48 121 55 123 51 129 39 124 42 122 44 125 46 118"/><polygon points="132 113 130 110 132 110 130 108 133 105 132 100 135 108 142 114"/><polygon points="225 23 224 28 219 23 223 21"/><polygon points="73 117 77 112 79 113 73 120 72 126 66 127 64 125 67 122 63 119 71 120"/><polygon points="287 20 291 17 286 15 285 8 292 10 292 14 299 13 298 11 307 0 309 5 309 9 305 15 300 15 299 19 293 19 294 21 288 25 281 25 286 34 281 31 276 39 280 41 270 46 270 38 277 32 275 24 280 25"/><polygon points="127 106 126 103 128 104"/><polygon points="279 8 279 6 283 8"/><polygon points="293 11 294 13 292 12"/>
                       </g>
                       <g onClick={() => handlePrefectureClick("46")} className={`kagoshima prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 46 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("46")} stroke={selectedCode === 46 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 46 ? "3.5" : "1.5"} transform="translate(96, 17)" style={{ display: isPrefectureVisible("46") ? "block" : "none" }}>
@@ -1154,7 +1163,7 @@
                       <g onClick={() => handlePrefectureClick("2")} className={`aomori prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 2 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("2")} fillRule="nonzero" stroke={selectedCode === 2 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 2 ? "3.5" : "1.5"} transform="translate(624, 287)" style={{ display: isPrefectureVisible("2") ? "block" : "none" }}>
                         <polygon points="3 71 3 63 0 60 6 51 12 51 18 47 21 31 17 27 20 26 21 19 27 23 31 20 35 23 37 38 40 45 46 41 45 37 47 33 58 42 61 39 65 23 61 16 55 22 41 25 47 0 64 11 73 6 71 37 73 51 77 62 81 61 86 67 80 74 75 72 71 75 69 72 56 82 52 81 53 70 48 70 48 65 38 72 35 70 32 72 25 67 22 70 10 68 7 72"/>
                       </g>
-                      <g onClick={() => handlePrefectureClick("1")} className={`hokkaido prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 1 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("1")} stroke={selectedCode === 1 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 1 ? "3.5" : "1.5"} transform={selectedRegionKey === "kyushu_okinawa" || rouletteKey === "kyushu_okinawa" ? "translate(-80, 1040) scale(0.5)" : "translate(602, 10)"} style={{ display: isPrefectureVisible("1") ? "block" : "none" }}>
+                      <g onClick={() => handlePrefectureClick("1")} className={`hokkaido prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 1 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("1")} stroke={selectedCode === 1 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 1 ? "3.5" : "1.5"} transform={effectiveRegionKey === "kyushu_okinawa" ? "translate(-80, 1040) scale(0.5)" : "translate(602, 10)"} style={{ display: isPrefectureVisible("1") ? "block" : "none" }}>
                         <path d="M4,240 L3,245 L0,246 L0,237 L6,235 L4,240 Z M33,261 L32,250 L28,243 L23,242 L21,237 L17,236 L15,231 L19,223 L17,212 L19,209 L28,207 L34,198 L37,202 L39,201 L43,192 L49,187 L39,173 L40,166 L47,164 L60,174 L71,171 L71,174 L78,177 L83,174 L89,165 L83,140 L86,135 L93,132 L97,126 L96,103 L100,95 L101,85 L98,67 L90,48 L93,39 L92,33 L94,36 L99,35 L105,28 L131,55 L139,68 L155,85 L184,104 L213,109 L214,113 L219,118 L238,118 L260,91 L262,96 L252,119 L252,129 L255,135 L265,138 L263,140 L264,137 L258,137 L263,149 L269,156 L273,157 L280,149 L287,148 L277,156 L275,163 L258,166 L256,172 L252,177 L247,177 L245,175 L246,173 L243,172 L240,178 L243,180 L228,181 L220,178 L205,186 L191,202 L182,216 L179,225 L180,240 L178,248 L164,237 L141,228 L113,211 L100,209 L103,206 L88,214 L72,230 L69,227 L73,227 L68,226 L66,220 L58,212 L47,213 L42,220 L39,230 L40,234 L52,242 L62,242 L71,254 L80,257 L82,260 L76,265 L72,267 L63,263 L60,265 L60,261 L57,260 L55,265 L48,269 L48,278 L40,282 L37,287 L30,284 L27,278 L28,269 L33,261 Z M71,48 L73,45 L77,47 L79,52 L75,55 L71,52 L71,48 Z M65,35 L65,33 L67,35 L66,45 L63,35 L65,35 Z M369,17 L367,13 L365,13 L363,17 L365,23 L364,26 L359,28 L357,35 L350,34 L351,41 L341,50 L341,54 L335,54 L335,56 L339,58 L339,62 L336,65 L332,64 L332,69 L329,66 L330,71 L327,78 L331,79 L336,70 L341,69 L346,59 L356,50 L358,40 L363,43 L369,41 L384,24 L397,15 L406,13 L407,10 L404,6 L407,2 L402,0 L396,2 L384,20 L373,22 L369,17 Z M290,99 L295,93 L303,91 L308,84 L311,85 L314,79 L304,82 L296,77 L293,79 L289,89 L280,104 L280,107 L266,122 L268,129 L273,128 L273,132 L274,119 L282,114 L283,109 L286,109 L287,102 L290,99 Z M322,125 L334,115 L329,113 L325,116 L326,117 L319,119 L319,123 L321,122 L322,125 Z M300,142 L304,137 L297,139 L300,142 Z M291,146 L293,143 L289,144 L291,146 Z"/>
                       </g>
                     </g>
@@ -1166,6 +1175,7 @@
                   </g>
                 </svg>
 
+                {}
                 {/* 四択・有名なもの・県庁所在地（四択）クイズ用：ボタン選択肢表示エリア */}
                 {quizActive && !quizFinished && (quizMode === "choices" || quizMode === "specialties" || quizMode === "capital") && (
                   <div className="w-full mt-2 bg-slate-50 border border-slate-200 p-2.5 sm:p-3 rounded-2xl z-10 animate-fade-in">
@@ -1218,146 +1228,180 @@
                   </div>
                 )}
 
+                {}
                 {/* クイズゲーム開始・設定パネル */}
                 {!quizActive && !quizFinished && (
-                  <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-6 text-center z-20 backdrop-blur-xs">
-                    <div className="bg-white border border-slate-200 p-8 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in">
+                  <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-4 sm:p-6 text-center z-20 backdrop-blur-xs rounded-[2rem] sm:rounded-[2.5rem]">
+                    <div className="bg-white border border-slate-200 p-5 sm:p-8 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in my-auto max-h-full overflow-y-auto">
                       {!showRegionSelect && !showNationalSelect ? (
                         <div>
-                          <h2 className="text-3xl sm:text-4xl font-black text-slate-800 mb-6 tracking-wider">ザ・<ruby>都道府県<rt>とどうふけん</rt></ruby>47！</h2>
-                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 mb-4 text-center max-w-md mx-auto">
-                            <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-1 flex items-center justify-center gap-1.5">👑 <ruby>累計獲得<rt>るいけいかくとく</rt></ruby>スコア</h4>
-                            <p className="text-3xl font-black text-rose-500">{totalScore.toLocaleString()} ポイント</p>
+                          <h2 className="text-2xl sm:text-3xl font-black text-slate-800 mb-3 tracking-wider">ザ・<ruby>都道府県<rt>とどうふけん</rt></ruby>47！</h2>
+                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-2.5 sm:p-3 mb-3 text-center max-w-md mx-auto">
+                            <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-0.5 flex items-center justify-center gap-1.5">👑 <ruby>累計獲得<rt>るいけいかくとく</rt></ruby>スコア</h4>
+                            <p className="text-2xl sm:text-3xl font-black text-rose-500">{totalScore.toLocaleString()} ポイント</p>
                           </div>
-                          
-                          {/* 5つのクイズモード選択メニュー */}
-                          <div className="flex flex-col gap-2 mb-4 max-w-md mx-auto">
+
+                          {/* アンロックお祝い表示 */}
+                          {(isSpecialtiesUnlocked || isCapitalUnlocked || isCapitalInputUnlocked) && (
+                            <div className="flex flex-col gap-0.5 mb-3 text-center">
+                              {isSpecialtiesUnlocked && (
+                                <p className="text-xs sm:text-sm font-black text-rose-600 animate-pulse">🎉 「有名なもの」ができるようになりました！</p>
+                              )}
+                              {isCapitalUnlocked && (
+                                <p className="text-xs sm:text-sm font-black text-rose-600 animate-pulse">🎉 「県庁所在地（四択）」ができるようになりました！</p>
+                              )}
+                              {isCapitalInputUnlocked && (
+                                <p className="text-xs sm:text-sm font-black text-rose-600 animate-pulse">🎉 「県庁所在地（入力）」ができるようになりました！</p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* 5モード選択のフレキシブルメニューを2段構成に変更 */}
+                          <div className="flex flex-col gap-2 mb-5 max-w-md mx-auto">
                             {/* 1段目：基本モード */}
                             <div className="bg-slate-100 p-1.5 rounded-2xl flex gap-1 border border-slate-200 text-xs sm:text-sm font-black w-full">
-                              <button onClick={() => setQuizChoiceMode("touch")} className={`flex-1 py-2 px-1.5 sm:px-2 rounded-xl transition-all ${quizMode === "touch" ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>🗺️ タッチ</button>
-                              <button onClick={() => setQuizChoiceMode("choices")} className={`flex-1 py-2 px-1.5 sm:px-2 rounded-xl transition-all ${quizMode === "choices" ? "bg-white text-rose-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>🔢 <ruby>四択<rt>よんたく</rt></ruby></button>
-                              <button 
-                                onClick={() => isSpecialtiesUnlocked && setQuizChoiceMode("specialties")} 
-                                disabled={!isSpecialtiesUnlocked}
-                                className={`flex-1 py-2 px-1.5 sm:px-2 rounded-xl transition-all ${!isSpecialtiesUnlocked ? "opacity-50 cursor-not-allowed bg-slate-200/70 text-slate-400" : quizMode === "specialties" ? "bg-white text-amber-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-                              >
-                                {isSpecialtiesUnlocked ? "🎁" : "🔒"} <ruby>有名<rt>ゆうめい</rt></ruby>なもの
-                              </button>
-                            </div>
-                            {/* 2段目：県庁所在地モード */}
-                            <div className="bg-slate-100 p-1.5 rounded-2xl flex gap-1 border border-slate-200 text-xs sm:text-sm font-black w-full">
-                              <button 
-                                onClick={() => isCapitalUnlocked && setQuizChoiceMode("capital")} 
-                                disabled={!isCapitalUnlocked}
-                                className={`flex-1 py-2 px-1.5 sm:px-2 rounded-xl transition-all ${!isCapitalUnlocked ? "opacity-50 cursor-not-allowed bg-slate-200/70 text-slate-400" : quizMode === "capital" ? "bg-white text-blue-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-                              >
-                                {isCapitalUnlocked ? "🏙️" : "🔒"} <ruby>県庁所在地（四択）<rt>けんちょうしょざいち（よんたく）</rt></ruby>
-                              </button>
-                              <button 
-                                onClick={() => isCapitalInputUnlocked && setQuizChoiceMode("capitalInput")} 
-                                disabled={!isCapitalInputUnlocked}
-                                className={`flex-1 py-2 px-1.5 sm:px-2 rounded-xl transition-all ${!isCapitalInputUnlocked ? "opacity-50 cursor-not-allowed bg-slate-200/70 text-slate-400" : quizMode === "capitalInput" ? "bg-white text-indigo-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
-                              >
-                                {isCapitalInputUnlocked ? "✏️" : "🔒"} <ruby>県庁所在地（入力）<rt>けんちょうしょざいち（にゅうりょく）</rt></ruby>
-                              </button>
-                            </div>
-
-                            {/* モードロック解除の進行案内 */}
-                            {(!isSpecialtiesUnlocked || !isCapitalUnlocked || !isCapitalInputUnlocked) && (
-                              <div className="text-[10px] font-bold text-slate-600 bg-amber-50/80 border border-amber-200 rounded-xl p-2 text-left flex flex-col gap-0.5 mt-1">
+                              <button onClick={() => setQuizChoiceMode("touch")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "touch" ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>🗺️ タッチ</button>
+                              <button onClick={() => setQuizChoiceMode("choices")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "choices" ? "bg-white text-rose-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>🔢 <ruby>四択<rt>よんたく</rt></ruby></button>
+                              
+                              <div className="relative group flex-1">
+                                <button 
+                                  onClick={() => isSpecialtiesUnlocked && setQuizChoiceMode("specialties")} 
+                                  disabled={!isSpecialtiesUnlocked}
+                                  className={`w-full py-2 px-1 rounded-xl transition-all ${!isSpecialtiesUnlocked ? "opacity-50 cursor-not-allowed bg-slate-200/70 text-slate-400" : quizMode === "specialties" ? "bg-white text-amber-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                                >
+                                  {isSpecialtiesUnlocked ? "🎁" : "🔒"} <ruby>有名<rt>ゆうめい</rt></ruby>なもの
+                                </button>
                                 {!isSpecialtiesUnlocked && (
-                                  <p className="flex items-center gap-1">🔒 <span className="text-amber-800 font-extrabold">「有名なもの」</span>: 地方モードで3地方全問正解で解放（現在: {perfectRegionCount}/3）</p>
-                                )}
-                                {!isCapitalUnlocked && (
-                                  <p className="flex items-center gap-1">🔒 <span className="text-blue-800 font-extrabold">「県庁所在地（四択）」</span>: 地方モード全7地方全問正解で解放（現在: {perfectRegionCount}/7）</p>
-                                )}
-                                {!isCapitalInputUnlocked && (
-                                  <p className="flex items-center gap-1">🔒 <span className="text-indigo-800 font-extrabold">「県庁所在地（入力）」</span>: 全国モード47問で全問正解で解放</p>
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col items-center z-50 w-52 pointer-events-none animate-fade-in">
+                                    <div className="bg-slate-800/95 text-white text-[11px] font-bold p-2.5 rounded-xl shadow-xl text-center leading-snug border border-slate-700">
+                                      🔒 <span className="text-amber-300 font-extrabold">「有名なもの」</span><br/>地方モードで3地方全問正解で解放<br/><span className="text-slate-300">（現在: {perfectRegionCount}/3 地方）</span>
+                                    </div>
+                                    <div className="w-2.5 h-2.5 bg-slate-800/95 rotate-45 -mt-1.5 border-r border-b border-slate-700"></div>
+                                  </div>
                                 )}
                               </div>
-                            )}
+                            </div>
+                            
+                            {/* 2段目：県庁所在地モード */}
+                            <div className="bg-slate-100 p-1.5 rounded-2xl flex gap-1 border border-slate-200 text-xs sm:text-sm font-black w-full">
+                              <div className="relative group flex-1">
+                                <button 
+                                  onClick={() => isCapitalUnlocked && setQuizChoiceMode("capital")} 
+                                  disabled={!isCapitalUnlocked}
+                                  className={`w-full py-2 px-1 rounded-xl transition-all ${!isCapitalUnlocked ? "opacity-50 cursor-not-allowed bg-slate-200/70 text-slate-400" : quizMode === "capital" ? "bg-white text-blue-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                                >
+                                  {isCapitalUnlocked ? "🏙️" : "🔒"} <ruby>県庁所在地（四択）<rt>けんちょうしょざいち（よんたく）</rt></ruby>
+                                </button>
+                                {!isCapitalUnlocked && (
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col items-center z-50 w-56 pointer-events-none animate-fade-in">
+                                    <div className="bg-slate-800/95 text-white text-[11px] font-bold p-2.5 rounded-xl shadow-xl text-center leading-snug border border-slate-700">
+                                      🔒 <span className="text-blue-300 font-extrabold">「県庁所在地（四択）」</span><br/>地方モード全7地方全問正解で解放<br/><span className="text-slate-300">（現在: {perfectRegionCount}/7 地方）</span>
+                                    </div>
+                                    <div className="w-2.5 h-2.5 bg-slate-800/95 rotate-45 -mt-1.5 border-r border-b border-slate-700"></div>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="relative group flex-1">
+                                <button 
+                                  onClick={() => isCapitalInputUnlocked && setQuizChoiceMode("capitalInput")} 
+                                  disabled={!isCapitalInputUnlocked}
+                                  className={`w-full py-2 px-1 rounded-xl transition-all ${!isCapitalInputUnlocked ? "opacity-50 cursor-not-allowed bg-slate-200/70 text-slate-400" : quizMode === "capitalInput" ? "bg-white text-indigo-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}
+                                >
+                                  {isCapitalInputUnlocked ? "✏️" : "🔒"} <ruby>県庁所在地（入力）<rt>けんちょうしょざいち（にゅうりょく）</rt></ruby>
+                                </button>
+                                {!isCapitalInputUnlocked && (
+                                  <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:flex flex-col items-center z-50 w-56 pointer-events-none animate-fade-in">
+                                    <div className="bg-slate-800/95 text-white text-[11px] font-bold p-2.5 rounded-xl shadow-xl text-center leading-snug border border-slate-700">
+                                      🔒 <span className="text-indigo-300 font-extrabold">「県庁所在地（入力）」</span><br/>全国モード47問で全問正解で解放
+                                    </div>
+                                    <div className="w-2.5 h-2.5 bg-slate-800/95 rotate-45 -mt-1.5 border-r border-b border-slate-700"></div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </div>
                           
-                          <div className="flex flex-col gap-4">
-                            <button onClick={() => setShowRegionSelect(true)} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-4.5 px-6 rounded-2xl transition-all shadow-md text-xl sm:text-2xl hover:-translate-y-0.5">🗺️ <ruby>地方<rt>ちほう</rt></ruby>モード</button>
-                            <button onClick={() => setShowNationalSelect(true)} className="w-full bg-rose-500 hover:bg-rose-600 text-white font-extrabold py-4.5 px-6 rounded-2xl transition-all shadow-md text-xl sm:text-2xl hover:-translate-y-0.5">🎌 <ruby>全国<rt>ぜんこく</rt></ruby>モード</button>
-                            <button onClick={startRecommendedQuiz} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold py-4.5 px-6 rounded-2xl transition-all shadow-md text-xl sm:text-2xl hover:-translate-y-0.5">🔥 <ruby>おすすめ（弱点克服）<rt>おすすめ（じゃくてんこくふく）</rt></ruby>モード</button>
+                          <div className="flex flex-col gap-3">
+                            <button onClick={() => setShowRegionSelect(true)} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-3.5 px-5 rounded-2xl transition-all shadow-md text-lg sm:text-xl hover:-translate-y-0.5">🗺️ <ruby>地方<rt>ちほう</rt></ruby>モード</button>
+                            <button onClick={() => setShowNationalSelect(true)} className="w-full bg-rose-500 hover:bg-rose-600 text-white font-extrabold py-3.5 px-5 rounded-2xl transition-all shadow-md text-lg sm:text-xl hover:-translate-y-0.5">🎌 <ruby>全国<rt>ぜんこく</rt></ruby>モード</button>
+                            <button onClick={startRecommendedQuiz} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold py-3.5 px-5 rounded-2xl transition-all shadow-md text-lg sm:text-xl hover:-translate-y-0.5">🔥 <ruby>おすすめ（弱点克服）<rt>おすすめ（じゃくてんこくふく）</rt></ruby>モード</button>
                           </div>
                         </div>
                       ) : showRegionSelect ? (
                         <div>
-                          <h3 className="text-xl sm:text-2xl font-black text-slate-800 mb-6 flex justify-center items-center gap-2"><span>🗺️</span> <ruby>挑戦<rt>ちょうせん</rt></ruby>する<ruby>地方<rt>ちほう</rt></ruby>を<ruby>選<rt>えら</rt></ruby>んでね！</h3>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
+                          <h3 className="text-lg sm:text-xl font-black text-slate-800 mb-4 flex justify-center items-center gap-2"><span>🗺️</span> <ruby>挑戦<rt>ちょうせん</rt></ruby>する<ruby>地方<rt>ちほう</rt></ruby>を<ruby>選<rt>えら</rt></ruby>んでね！</h3>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mb-5">
                             {Object.entries(REGION_GROUPS).map(([key, group]) => {
                               const isHighlighted = rouletteKey === key; const isFinal = finalSelectedKey === key;
                               let btnClass = `btn-region-${key} border border-transparent`;
                               if (isHighlighted) { btnClass = "bg-yellow-300 text-yellow-950 border-yellow-400 scale-105 shadow-md shadow-yellow-200/50"; }
                               if (isFinal) { btnClass = "bg-amber-400 text-slate-900 border-amber-500 scale-110 shadow-lg shadow-amber-300 ring-4 ring-amber-300 ring-offset-2 animate-bounce"; }
                               return (
-                                <button key={key} disabled={isRouletteActive} onClick={() => startQuiz("easy", key)} className={`${btnClass} font-extrabold py-3.5 px-4 rounded-xl transition-all text-sm sm:text-base text-center`}>
-                                  <ruby>{group.name}<rt>{group.ruby}</rt></ruby><div className="text-[10px] opacity-80 mt-0.5 font-bold">👑 ベスト: {regionBestScores[key] || 0}ポイント</div>
+                                <button key={key} disabled={isRouletteActive} onClick={() => startQuiz("easy", key)} className={`${btnClass} font-extrabold py-3 px-3 rounded-xl transition-all text-xs sm:text-sm text-center`}>
+                                  <ruby>{group.name}<rt>{group.ruby}</rt></ruby><div className="text-[9px] opacity-80 mt-0.5 font-bold">👑 ベスト: {regionBestScores[key] || 0}ポイント</div>
                                 </button>
                               );
                             })}
-                            <button disabled={isRouletteActive} onClick={handleRoulette} className={`col-span-1 sm:col-span-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-slate-900 border border-amber-300 font-black py-4 px-4 rounded-xl transition-all text-base text-center shadow-sm ${isRouletteActive ? "opacity-50 cursor-not-allowed" : "hover:-translate-y-0.5"}`}>
+                            <button disabled={isRouletteActive} onClick={handleRoulette} className={`col-span-1 sm:col-span-2 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-slate-900 border border-amber-300 font-black py-3 px-3 rounded-xl transition-all text-sm text-center shadow-sm ${isRouletteActive ? "opacity-50 cursor-not-allowed" : "hover:-translate-y-0.5"}`}>
                               {isRouletteActive ? <span>🎰 <ruby>えらびちゅう<rt>えらびちゅう</rt></ruby>...</span> : <span>🎲 <ruby>おまかせ<rt>おまかせ</rt></ruby></span>}
                             </button>
                           </div>
-                          <button disabled={isRouletteActive} onClick={() => setShowRegionSelect(false)} className={`w-full max-w-xs mx-auto block bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold py-3 px-4 rounded-xl transition-all text-sm sm:text-base text-center border border-rose-100 active:scale-95 ${isRouletteActive ? "opacity-30 cursor-not-allowed" : ""}`}>
+                          <button disabled={isRouletteActive} onClick={() => setShowRegionSelect(false)} className={`w-full max-w-xs mx-auto block bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold py-2.5 px-4 rounded-xl transition-all text-xs sm:text-sm text-center border border-rose-100 active:scale-95 ${isRouletteActive ? "opacity-30 cursor-not-allowed" : ""}`}>
                             🔙 <ruby>戻る<rt>もどる</rt></ruby>
                           </button>
                         </div>
                       ) : (
                         /* 全国モードでの問題数選択画面 */
                         <div>
-                          <h3 className="text-xl sm:text-2xl font-black text-slate-800 mb-6 flex justify-center items-center gap-2">
+                          <h3 className="text-lg sm:text-xl font-black text-slate-800 mb-4 flex justify-center items-center gap-2">
                             <span>🎌</span> <ruby>出題数<rt>しゅつだいすう</rt></ruby>を<ruby>選<rt>えら</rt></ruby>んでね！
                           </h3>
-                          <div className="grid grid-cols-2 gap-4 mb-6">
+                          <div className="grid grid-cols-2 gap-3 mb-5">
                             {/* 10問 (常にプレイ可能) */}
-                            <button onClick={() => startQuiz("normal", null, 10)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-4 px-4 rounded-xl text-lg transition-all text-center hover:-translate-y-0.5 shadow-md">
+                            <button onClick={() => startQuiz("normal", null, 10)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-3.5 px-3 rounded-xl text-base transition-all text-center hover:-translate-y-0.5 shadow-md">
                               10<ruby>問<rt>もん</rt></ruby>
                             </button>
 
                             {/* 20問 */}
                             {unlockedNationalCount >= 20 ? (
-                              <button onClick={() => startQuiz("normal", null, 20)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-4 px-4 rounded-xl text-lg transition-all text-center hover:-translate-y-0.5 shadow-md">
+                              <button onClick={() => startQuiz("normal", null, 20)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-3.5 px-3 rounded-xl text-base transition-all text-center hover:-translate-y-0.5 shadow-md">
                                 20<ruby>問<rt>もん</rt></ruby>
                               </button>
                             ) : (
-                              <button disabled className="bg-slate-200 text-slate-400 font-bold py-3 px-2 rounded-xl text-sm border border-slate-300 cursor-not-allowed text-center flex flex-col items-center justify-center">
-                                <span className="text-base font-black">🔒 20<ruby>問<rt>もん</rt></ruby></span>
-                                <span className="text-[10px] text-slate-500 mt-1">10問全問正解で解放</span>
+                              <button disabled className="bg-slate-200 text-slate-400 font-bold py-2.5 px-2 rounded-xl text-xs border border-slate-300 cursor-not-allowed text-center flex flex-col items-center justify-center">
+                                <span className="text-sm font-black">🔒 20<ruby>問<rt>もん</rt></ruby></span>
+                                <span className="text-[9px] text-slate-500 mt-0.5">10問全問正解で解放</span>
                               </button>
                             )}
 
                             {/* 30問 */}
                             {unlockedNationalCount >= 30 ? (
-                              <button onClick={() => startQuiz("normal", null, 30)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-4 px-4 rounded-xl text-lg transition-all text-center hover:-translate-y-0.5 shadow-md">
+                              <button onClick={() => startQuiz("normal", null, 30)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-3.5 px-3 rounded-xl text-base transition-all text-center hover:-translate-y-0.5 shadow-md">
                                 30<ruby>問<rt>もん</rt></ruby>
                               </button>
                             ) : (
-                              <button disabled className="bg-slate-200 text-slate-400 font-bold py-3 px-2 rounded-xl text-sm border border-slate-300 cursor-not-allowed text-center flex flex-col items-center justify-center">
-                                <span className="text-base font-black">🔒 30<ruby>問<rt>もん</rt></ruby></span>
-                                <span className="text-[10px] text-slate-500 mt-1">20問全問正解で解放</span>
+                              <button disabled className="bg-slate-200 text-slate-400 font-bold py-2.5 px-2 rounded-xl text-xs border border-slate-300 cursor-not-allowed text-center flex flex-col items-center justify-center">
+                                <span className="text-sm font-black">🔒 30<ruby>問<rt>もん</rt></ruby></span>
+                                <span className="text-[9px] text-slate-500 mt-0.5">20問全問正解で解放</span>
                               </button>
                             )}
 
                             {/* 47問 (全問) */}
                             {unlockedNationalCount >= 47 ? (
-                              <button onClick={() => startQuiz("normal", null, 47)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-4 px-4 rounded-xl text-lg transition-all text-center hover:-translate-y-0.5 shadow-md">
+                              <button onClick={() => startQuiz("normal", null, 47)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-3.5 px-3 rounded-xl text-base transition-all text-center hover:-translate-y-0.5 shadow-md">
                                 47<ruby>問<rt>もん</rt></ruby>（<ruby>全問<rt>ぜんもん</rt></ruby>）
                               </button>
                             ) : (
-                              <button disabled className="bg-slate-200 text-slate-400 font-bold py-3 px-2 rounded-xl text-sm border border-slate-300 cursor-not-allowed text-center flex flex-col items-center justify-center">
-                                <span className="text-base font-black">🔒 47<ruby>問<rt>もん</rt></ruby>（<ruby>全問<rt>ぜんもん</rt></ruby>）</span>
-                                <span className="text-[10px] text-slate-500 mt-1">30問全問正解で解放</span>
+                              <button disabled className="bg-slate-200 text-slate-400 font-bold py-2.5 px-2 rounded-xl text-xs border border-slate-300 cursor-not-allowed text-center flex flex-col items-center justify-center">
+                                <span className="text-sm font-black">🔒 47<ruby>問<rt>もん</rt></ruby>（<ruby>全問<rt>ぜんもん</rt></ruby>）</span>
+                                <span className="text-[9px] text-slate-500 mt-0.5">30問全問正解で解放</span>
                               </button>
                             )}
                           </div>
                           <button 
                             onClick={() => setShowNationalSelect(false)}
-                            className="w-full max-w-xs mx-auto block bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold py-3 px-4 rounded-xl transition-all text-sm sm:text-base text-center border border-rose-100 active:scale-95"
+                            className="w-full max-w-xs mx-auto block bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold py-2.5 px-4 rounded-xl transition-all text-xs sm:text-sm text-center border border-rose-100 active:scale-95"
                           >
                             🔙 <ruby>戻る<rt>もどる</rt></ruby>
                           </button>
