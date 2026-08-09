@@ -1420,7 +1420,7 @@
 
                         return (
                           <div>
-                            <h2 className="text-3xl sm:text-4xl font-black text-slate-800 mb-4 tracking-wider">ザ・<ruby>都道府県<rt>とどうふけん</rt></ruby>47！</h2>
+                            <h2 className="text-2xl sm:text-4xl font-black text-slate-800 mb-4 tracking-wider pt-2">ザ・<ruby>都道府県<rt className="text-[0.38em] sm:text-[0.45em]">とどうふけん</rt></ruby>47！</h2>
                             
                             {newlyUnlockedMsg && (
                               <div className="bg-red-50 border-2 border-red-400 text-red-600 font-black py-2 px-4 rounded-xl mb-4 animate-pulse text-sm sm:text-base">
@@ -1543,7 +1543,7 @@
               )}
 
               {quizFinished && (
-                <div className="bg-white border border-slate-200 rounded-[2rem] p-6 shadow-md flex flex-col gap-4 animate-fade-in max-w-2xl mx-auto w-full">
+                <div className={`${isPractice ? "bg-amber-50 border-amber-200" : "bg-white border-slate-200"} border rounded-[2rem] p-6 shadow-md flex flex-col gap-4 animate-fade-in max-w-2xl mx-auto w-full`}>
                   <div className="text-center">
                     {selectedRegionKey && REGION_GROUPS[selectedRegionKey] ? <p className="text-lg sm:text-xl font-black text-slate-700">【<ruby>{REGION_GROUPS[selectedRegionKey].name}<rt>{REGION_GROUPS[selectedRegionKey].ruby}</rt></ruby>】<ruby>地方挑戦<rt>ちほうちょうせん</rt></ruby>お<ruby>疲<rt>つか</rt></ruby>れさまでした！</p> : <p className="text-lg sm:text-xl font-black text-slate-700">{maxQuestions}<ruby>問<rt>もん</rt></ruby>のチャレンジお<ruby>疲<rt>つか</rt></ruby>れさまでした！</p>}
                   </div>
