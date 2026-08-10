@@ -9,9 +9,9 @@
   <!-- React and ReactDOM CDN -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-  <!-- Babel for JSX -->
+  <!-- Babel for JSX compilation in browser -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <!-- Canvas Confetti -->
+  <!-- Canvas Confetti for celebrations -->
   <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
   <!-- Firebase App (Compat) and Firestore/Auth SDK -->
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
@@ -19,6 +19,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <!-- Google Fonts (Noto Sans JP) -->
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght=300;400;500;700;900&display=swap" rel="stylesheet">
+  
   <style>
     body { font-family: 'Noto Sans JP', sans-serif; }
     .svg-map path, .svg-map polygon { transition: fill 0.2s ease, stroke 0.2s ease, transform 0.1s ease; cursor: pointer; }
@@ -143,7 +144,6 @@
       47: { code: "47", name: "沖縄県", ruby: "おきなわけん", english: "Okinawa", capital: "那覇市", capitalRuby: "なはし", region: "okinawa", regionName: "沖縄", regionRuby: "おきなわ", specialties: [{ k: "首里城", r: "しゅりじょう" }, { k: "美ら海水族館", r: "ちゅらうみすいぞくかん" }, { k: "ゴーヤチャンプルー", r: "ゴーヤチャンプルー" }] }
     };
 
-    /* 練習モード用：地図上の都道府県名表示座標とフォントサイズ（拡大設定） */
     const LABEL_POSITIONS = {
       1: { x: 180, y: 160, fontSize: "36px" },
       2: { x: 40, y: 45, fontSize: "24px" },
@@ -286,11 +286,24 @@
       const [quizRecommendedActive, setQuizRecommendedActive] = useState(false);
       const [isPractice, setIsPractice] = useState(false);
 
+      const [showMultiplayer, setShowMultiplayer] = useState(false);
+      const [multiNickname, setMultiNickname] = useState(() => safeGetLocalStorage("japan_map_quiz_nickname", "プレイヤー" + Math.floor(100 + Math.random() * 900)));
+      const [multiRoomCodeInput, setMultiRoomCodeInput] = useState("");
+      const [currentRoomId, setCurrentRoomId] = useState(null);
+      const [multiRoom, setMultiRoom] = useState(null);
+      const [multiNotice, setMultiNotice] = useState("");
+      const [isMultiMode, setIsMultiMode] = useState(false);
+
+      const [selectedMultiQuizMode, setSelectedMultiQuizMode] = useState("touch");
+      const [selectedMultiRegionKey, setSelectedMultiRegionKey] = useState("hokkaido_tohoku");
+      const [selectedMultiNationalCount, setSelectedMultiNationalCount] = useState(10);
+
       const [userInputValue, setUserInputValue] = useState("");
 
       const [quizActive, setQuizActive] = useState(false);
       const [quizDifficulty, setQuizDifficulty] = useState("easy");
       const [currentTarget, setCurrentTarget] = useState(null);
+      const [currentChoices, setCurrentChoices] = useState([]);
       const [quizQueue, setQuizQueue] = useState([]);
       const [score, setScore] = useState(0);
       const scoreRef = useRef(0);
@@ -319,7 +332,6 @@
       const perfectRegionCount = useMemo(() => {
         let count = 0;
         Object.keys(REGION_GROUPS).forEach(key => {
-          const regionMax = REGION_GROUPS[key].prefs.length;
           const bestTimeForRegion = regionBestTimes[key];
           if (bestTimeForRegion && bestTimeForRegion < 999999) {
             count += 1;
@@ -391,7 +403,6 @@
         return REGION_COLORS[pref.region].fill;
       };
 
-      /* 練習モード用：地図上の都道府県名描画ヘルパー（文字サイズ拡大＆細字化） */
       const renderPrefectureLabel = (code) => {
         if (!isPractice || (quizMode !== "touch" && quizMode !== "choices")) return null;
         const pos = LABEL_POSITIONS[code];
@@ -445,6 +456,31 @@
         });
       };
 
+      const generateChoices = (targetCode) => {
+        const allCodes = Object.keys(PREFECTURE_DATA).map(Number);
+        const distractors = allCodes.filter(c => c !== parseInt(targetCode, 10));
+        distractors.sort(() => Math.random() - 0.5);
+        const choices = [parseInt(targetCode, 10), distractors[0], distractors[1], distractors[2]];
+        choices.sort(() => Math.random() - 0.5);
+        return choices;
+      };
+
+      const handleNextQuestion = (queue, currentScore, currentCombo, currentCorrect) => {
+        if (!queue || queue.length === 0) {
+          endQuiz(true);
+          return;
+        }
+        const nextCode = queue[0];
+        const remainingQueue = queue.slice(1);
+
+        setCurrentTarget(PREFECTURE_DATA[nextCode]);
+        setCurrentChoices(generateChoices(nextCode));
+        setQuizQueue(remainingQueue);
+        setQuizFeedback(null);
+        setTimeLeft(30);
+        setUserInputValue("");
+      };
+
       const endQuiz = (isFinished = false) => {
         setQuizActive(false);
         setUserInputValue("");
@@ -460,26 +496,67 @@
             safeSetLocalStorage("japan_map_quiz_total_score", newTotalScore.toString());
             return newTotalScore;
           });
+
+          if (isMultiMode && currentRoomId && user && firebaseAvailable) {
+            try {
+              const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
+              const updateObj = {};
+              updateObj[`players.${user.uid}.score`] = scoreRef.current;
+              updateObj[`players.${user.uid}.correct`] = correctAnswersRef.current;
+              updateObj[`players.${user.uid}.time`] = duration;
+              updateObj[`players.${user.uid}.finished`] = true;
+              roomRef.update(updateObj).catch(err => console.error(err));
+            } catch (e) {}
+          }
           
-          let isNewScore = false; let updatedBestScore = bestScore; const updatedRegionBestScores = { ...regionBestScores };
-          if (selectedRegionKey) {
-            const currentRegionBest = regionBestScores[selectedRegionKey] || 0;
-            isNewScore = gainedScore > currentRegionBest;
-            if (isNewScore) {
-              updatedRegionBestScores[selectedRegionKey] = gainedScore; setRegionBestScores(updatedRegionBestScores);
-              safeSetLocalStorage(`japan_map_quiz_best_score_${selectedRegionKey}`, gainedScore.toString());
+          let isNewScore = false; 
+          let updatedBestScore = bestScore; 
+          const updatedRegionBestScores = { ...regionBestScores };
+
+          if (gainedScore > bestScore) {
+            isNewScore = true;
+            updatedBestScore = gainedScore;
+            setBestScore(gainedScore);
+            safeSetLocalStorage("japan_map_quiz_best_score", gainedScore.toString());
+          }
+
+          if (selectedRegionKey && gainedScore > (regionBestScores[selectedRegionKey] || 0)) {
+            updatedRegionBestScores[selectedRegionKey] = gainedScore;
+            setRegionBestScores(updatedRegionBestScores);
+            safeSetLocalStorage(`japan_map_quiz_best_score_${selectedRegionKey}`, gainedScore.toString());
+          }
+
+          let isNewCorrect = false;
+          if (correctAnswersRef.current > bestCorrect) {
+            isNewCorrect = true;
+            setBestCorrect(correctAnswersRef.current);
+            safeSetLocalStorage("japan_map_quiz_best_correct", correctAnswersRef.current.toString());
+          }
+
+          let isNewCombo = false;
+          if (maxCombo > bestCombo) {
+            isNewCombo = true;
+            setBestCombo(maxCombo);
+            safeSetLocalStorage("japan_map_quiz_best_combo", maxCombo.toString());
+          }
+
+          let isNewTime = false;
+          const updatedRegionBestTimes = { ...regionBestTimes };
+          if (correctAnswersRef.current === maxQuestions && duration > 0) {
+            if (duration < bestTime) {
+              isNewTime = true;
+              setBestTime(duration);
+              safeSetLocalStorage("japan_map_quiz_best_time", duration.toString());
             }
-          } else {
-            isNewScore = gainedScore > bestScore;
-            if (isNewScore) {
-              updatedBestScore = gainedScore; setBestScore(gainedScore);
-              safeSetLocalStorage("japan_map_quiz_best_score", gainedScore.toString());
+            if (selectedRegionKey && duration < (regionBestTimes[selectedRegionKey] || 999999)) {
+              updatedRegionBestTimes[selectedRegionKey] = duration;
+              setRegionBestTimes(updatedRegionBestTimes);
+              safeSetLocalStorage(`japan_map_quiz_best_time_${selectedRegionKey}`, duration.toString());
             }
           }
 
-          const isPerfect = correctAnswersRef.current === maxQuestions;
-          
-          if (isPerfect && !selectedRegionKey && quizDifficulty === "normal") {
+          const isPerfect100 = (correctAnswersRef.current === maxQuestions);
+          if (isPerfect100) {
             setUnlockedNationalCounts(prev => {
               let updated = { ...prev };
               if (maxQuestions === 10) updated.c20 = true;
@@ -490,403 +567,209 @@
             });
           }
 
-          let isNewTime = false; let updatedBestTime = bestTime; const updatedRegionBestTimes = { ...regionBestTimes };
-          if (isPerfect) {
-            if (selectedRegionKey) {
-              const currentRegionBestTime = regionBestTimes[selectedRegionKey] || 999999;
-              isNewTime = duration > 0 && duration < currentRegionBestTime;
-              if (isNewTime) {
-                updatedRegionBestTimes[selectedRegionKey] = duration; setRegionBestTimes(updatedRegionBestTimes);
-                safeSetLocalStorage(`japan_map_quiz_best_time_${selectedRegionKey}`, duration.toString());
-              }
-            } else {
-              isNewTime = duration > 0 && duration < bestTime;
-              if (isNewTime) {
-                updatedBestTime = duration; setBestTime(duration);
-                safeSetLocalStorage("japan_map_quiz_best_time", duration.toString());
-              }
-            }
-          }
-
-          const isNewCorrect = correctAnswersRef.current > bestCorrect; const isNewCombo = maxCombo > bestCombo;
-          const hasNew = isNewScore || isNewCorrect || isNewCombo || isNewTime;
-          const updatedBestCorrect = isNewCorrect ? correctAnswersRef.current : bestCorrect;
-          const updatedBestCombo = isNewCombo ? maxCombo : bestCombo;
-
           setNewRecords({ score: isNewScore, correct: isNewCorrect, combo: isNewCombo, time: isNewTime });
-          safeSetLocalStorage("japan_map_quiz_best_correct", updatedBestCorrect.toString());
-          safeSetLocalStorage("japan_map_quiz_best_combo", updatedBestCombo.toString());
-          safeSetLocalStorage("japan_map_quiz_best_time", updatedBestTime.toString());
-          setBestScore(updatedBestScore);
-          setBestCorrect(updatedBestCorrect); setBestCombo(updatedBestCombo); setBestTime(updatedBestTime);
+
+          if (isPerfect100 || isNewScore || isNewCorrect || isNewCombo || isNewTime) {
+            setShowKusudama(true);
+            setIsKusudamaOpen(false);
+            setKusudamaFadeOut(false);
+
+            setTimeout(() => {
+              setIsKusudamaOpen(true);
+              if (typeof confetti === "function") {
+                confetti({ particleCount: 120, spread: 80, origin: { y: 0.4 } });
+              }
+            }, 400);
+
+            setTimeout(() => {
+              setKusudamaFadeOut(true);
+            }, 3800);
+          } else {
+            setShowKusudama(false);
+          }
 
           if (firebaseAvailable && user) {
             try {
               const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/scores/stats`);
-              const updatePayload = { 
-                totalScore: totalScore + gainedScore, 
-                bestScore: updatedBestScore, 
-                bestCorrect: updatedBestCorrect, 
-                bestCombo: updatedBestCombo, 
-                bestTime: updatedBestTime 
-              };
-              if (selectedRegionKey) {
-                if (isNewScore) { updatePayload[`bestScore_${selectedRegionKey}`] = gainedScore; }
-                if (isNewTime) { updatePayload[`bestTime_${selectedRegionKey}`] = duration; }
-              }
-              docRef.set(updatePayload, { merge: true }).catch(err => console.error(err));
+              docRef.set({
+                totalScore: (totalScore + gainedScore),
+                bestScore: Math.max(bestScore, gainedScore),
+                bestCorrect: Math.max(bestCorrect, correctAnswersRef.current),
+                bestCombo: Math.max(bestCombo, maxCombo),
+                bestTime: Math.min(bestTime, (correctAnswersRef.current === maxQuestions ? duration : bestTime)),
+                regionBestScores: updatedRegionBestScores,
+                regionBestTimes: updatedRegionBestTimes
+              }, { merge: true }).catch(err => console.error(err));
             } catch (e) {}
           }
-
-          if (hasNew) {
-            setShowKusudama(true); setIsKusudamaOpen(false); setKusudamaFadeOut(false);
-            setTimeout(() => {
-              setIsKusudamaOpen(true);
-              const durationAnimate = 3 * 1000; const animationEnd = Date.now() + durationAnimate;
-              const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 0 };
-              const randomInRange = (min, max) => Math.random() * (max - min) + min;
-              const interval = setInterval(() => {
-                const timeLeft = animationEnd - Date.now();
-                if (timeLeft <= 0) { return clearInterval(interval); }
-                const particleCount = 50 * (timeLeft / durationAnimate);
-                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 } }));
-                confetti(Object.assign({}, defaults, { particleCount, origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 } }));
-              }, 250);
-            }, 600);
-            setTimeout(() => { setKusudamaFadeOut(true); }, 3500);
-            setTimeout(() => { setShowKusudama(false); }, 4500);
-          } else {
-            confetti({ particleCount: 120, spread: 70, origin: { y: 0.6 } });
-          }
         }
       };
 
-      const startQuiz = (difficulty, regionKey = null, nationalQuestionCount = null, customCodes = null, practice = false) => {
-        setQuizDifficulty(difficulty); setSelectedRegionKey(regionKey);
-        setIsPractice(practice);
-        let slicedQueue = [];
-        
-        if (customCodes) {
-          slicedQueue = [...customCodes];
-          setMaxQuestions(customCodes.length);
-        } else if (regionKey && REGION_GROUPS[regionKey]) { 
-          const codes = [...REGION_GROUPS[regionKey].prefs]; 
-          setMaxQuestions(codes.length); 
-          slicedQueue = [...codes].sort(() => Math.random() - 0.5);
-        } else { 
-          const codes = Object.keys(PREFECTURE_DATA).map(Number); 
-          setMaxQuestions(nationalQuestionCount || 15); 
-          const shuffled = [...codes].sort(() => Math.random() - 0.5);
-          slicedQueue = shuffled.slice(0, nationalQuestionCount || 15);
+      const startQuiz = (difficulty = "easy", regionKey = null, count = null, customQueue = null, practiceMode = false) => {
+        setIsPractice(practiceMode);
+        setQuizDifficulty(difficulty);
+        setSelectedRegionKey(regionKey);
+        setShowRegionSelect(false);
+        setShowPracticeSelect(false);
+        setShowNationalSelect(false);
+        setQuizFinished(false);
+
+        let queue = [];
+        if (customQueue && Array.isArray(customQueue) && customQueue.length > 0) {
+          queue = [...customQueue];
+        } else if (regionKey && REGION_GROUPS[regionKey]) {
+          const codes = [...REGION_GROUPS[regionKey].prefs];
+          queue = codes.sort(() => Math.random() - 0.5);
+        } else {
+          const targetCount = count || 10;
+          const codes = Object.keys(PREFECTURE_DATA).map(Number);
+          queue = codes.sort(() => Math.random() - 0.5).slice(0, targetCount);
         }
 
-        setQuizQueue(slicedQueue); setScore(0); scoreRef.current = 0; setCombo(0); setMaxCombo(0);
-        setTotalQuestions(0); setCorrectAnswers(0); correctAnswersRef.current = 0; setQuizActive(true); setQuizFinished(false);
-        setQuizFeedback(null); setSelectedCode(null); setShowRegionSelect(false); setShowPracticeSelect(false); setShowNationalSelect(false);
+        setQuizQueue(queue.slice(1));
+        const firstCode = queue[0];
+        setCurrentTarget(PREFECTURE_DATA[firstCode]);
+        setCurrentChoices(generateChoices(firstCode));
+        setMaxQuestions(queue.length);
+        setTotalQuestions(0);
+        setScore(0);
+        scoreRef.current = 0;
+        setCombo(0);
+        setMaxCombo(0);
+        setCorrectAnswers(0);
+        correctAnswersRef.current = 0;
+        setQuizFeedback(null);
+        setTimeLeft(30);
         setUserInputValue("");
-        setNewRecords({ score: false, correct: false, combo: false, time: false });
-        setShowKusudama(false); setIsKusudamaOpen(false); setKusudamaFadeOut(false);
-        quizStartTimeRef.current = Date.now(); setElapsedTime(0);
-        setCurrentTarget(PREFECTURE_DATA[slicedQueue[0]]); setTimeLeft(30);
+        quizStartTimeRef.current = Date.now();
+        setQuizActive(true);
       };
 
-      const startRecommendedQuiz = () => {
-        setSelectedRegionKey(null);
-        setQuizRecommendedActive(true);
-        setIsPractice(false);
+      const handleAnswerSelection = (selectedPrefCode) => {
+        if (!quizActive || quizFeedback || !currentTarget) return;
 
-        const prefList = Object.keys(PREFECTURE_DATA).map(Number);
-        const scoredPrefs = prefList.map(code => {
-          const stat = prefStats[code] || { asked: 0, correct: 0 };
-          const asked = stat.asked || 0;
-          const correct = stat.correct || 0;
-          const rate = asked > 0 ? (correct / asked) : null;
-          
-          let priority = 3;
-          let sortSubKey = asked;
-          if (asked > 0 && rate <= 0.5) {
-            priority = 1;
-            sortSubKey = rate;
-          } else if (asked === 0) {
-            priority = 2;
-            sortSubKey = 0;
-          } else {
-            priority = 3;
-            sortSubKey = rate;
-          }
-
-          return {
-            code,
-            priority,
-            sortSubKey,
-            asked,
-            random: Math.random()
-          };
-        });
-
-        scoredPrefs.sort((a, b) => {
-          if (a.priority !== b.priority) return a.priority - b.priority;
-          if (a.sortSubKey !== b.sortSubKey) return a.sortSubKey - b.sortSubKey;
-          if (a.asked !== b.asked) return a.asked - b.asked;
-          return a.random - b.random;
-        });
-
-        const selectedCodes = scoredPrefs.slice(0, 10).map(p => p.code);
-        startQuiz("easy", null, 10, selectedCodes);
-      };
-
-      const handleChoiceValidation = (clickedCode) => {
-        if (!quizActive || quizFeedback || quizFinished) return;
-        setSelectedCode(clickedCode);
-        const isCorrect = clickedCode === currentTarget.code * 1;
-        
-        updatePrefStats(currentTarget.code * 1, isCorrect);
+        const isCorrect = parseInt(selectedPrefCode, 10) === parseInt(currentTarget.code, 10);
+        updatePrefStats(currentTarget.code, isCorrect);
 
         if (isCorrect) {
-          const newCombo = combo + 1; setCombo(newCombo);
-          if (newCombo > maxCombo) { setMaxCombo(newCombo); }
-          setCorrectAnswers(prev => prev + 1);
-          correctAnswersRef.current += 1;
-          if (isPractice) {
-            setScore(10);
-            scoreRef.current = 10;
-          } else {
-            const gained = 10 + (newCombo > 2 ? newCombo * 2 : 0);
-            setScore(prev => {
-              const next = prev + gained;
-              scoreRef.current = next;
-              return next;
-            });
-          }
-          
-          const feedbackMsg = quizMode === "specialties" ? (
-            <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の有名なものはその通りです！</span>
-          ) : quizMode === "capital" ? (
-            <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の県庁所在地は【<ruby>{currentTarget.capital}<rt>{currentTarget.capitalRuby}</rt></ruby>】です！</span>
-          ) : (
-            <span><ruby>正解<rt>せいかい</rt></ruby>！ 【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】です。</span>
-          );
+          const newCombo = combo + 1;
+          const pointsGained = 10 + (newCombo > 1 ? (newCombo - 1) * 5 : 0);
+          const newScore = score + pointsGained;
+          const newCorrect = correctAnswers + 1;
 
-          setQuizFeedback({ correct: true, message: feedbackMsg });
-          playPingPong();
-          setTotalQuestions(prev => prev + 1);
-          setTimeout(() => {
-            setQuizFeedback(null); setSelectedCode(null);
-            const nextQueue = quizQueue.slice(1); setQuizQueue(nextQueue);
-            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) { endQuiz(true); } 
-            else { setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]); setTimeLeft(30); }
-          }, 150);
+          setCombo(newCombo);
+          if (newCombo > maxCombo) setMaxCombo(newCombo);
+          setScore(newScore);
+          scoreRef.current = newScore;
+          setCorrectAnswers(newCorrect);
+          correctAnswersRef.current = newCorrect;
+          setQuizFeedback({ correct: true, message: `素晴らしい！ +${pointsGained}pt (${newCombo}コンボ)` });
         } else {
           setCombo(0);
-          
-          const feedbackMsg = quizMode === "specialties" ? (
-            <span>それは【<ruby>{PREFECTURE_DATA[clickedCode].name}<rt>{PREFECTURE_DATA[clickedCode].ruby}</rt></ruby>】の有名なものでした。</span>
-          ) : quizMode === "capital" ? (
-            <span>それは【<ruby>{PREFECTURE_DATA[clickedCode].name}<rt>{PREFECTURE_DATA[clickedCode].ruby}</rt></ruby>】の県庁所在地（【<ruby>{PREFECTURE_DATA[clickedCode].capital}<rt>{PREFECTURE_DATA[clickedCode].capitalRuby}</rt></ruby>】）でした。</span>
-          ) : (
-            <span>そこは【<ruby>{PREFECTURE_DATA[clickedCode].name}<rt>{PREFECTURE_DATA[clickedCode].ruby}</rt></ruby>】でした。</span>
-          );
+          setQuizFeedback({ correct: false, message: `残念！正解は「${currentTarget.name}」です。` });
+        }
 
-          setQuizFeedback({ correct: false, message: feedbackMsg });
-          setTotalQuestions(prev => prev + 1);
-          setTimeout(() => {
-            setQuizFeedback(null); setSelectedCode(null);
-            const nextQueue = quizQueue.slice(1); setQuizQueue(nextQueue);
-            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) { endQuiz(true); } 
-            else { setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]); setTimeLeft(30); }
-          }, 1800);
+        const nextTotal = totalQuestions + 1;
+        setTotalQuestions(nextTotal);
+
+        setTimeout(() => {
+          if (nextTotal >= maxQuestions) {
+            endQuiz(true);
+          } else {
+            handleNextQuestion(quizQueue, score, combo, correctAnswers);
+          }
+        }, isCorrect ? 1000 : 2000);
+      };
+
+      const handlePrefectureClick = (code) => {
+        if (!quizActive) {
+          setSelectedCode(parseInt(code, 10));
+          return;
+        }
+        if (quizMode === "touch") {
+          handleAnswerSelection(code);
+        }
+      };
+
+      const handleChoiceButtonClick = (choiceCode) => {
+        if (quizMode === "choices" || quizMode === "specialties" || quizMode === "capital") {
+          handleAnswerSelection(choiceCode);
         }
       };
 
       const handleInputSubmit = () => {
-        if (!quizActive || quizFeedback || quizFinished) return;
-        
-        const kanjiAnswer = currentTarget.capital.trim();
-        const rubyAnswer = currentTarget.capitalRuby.trim();
-        const inputCleaned = userInputValue.trim().replace(/\s+/g, '');
+        if (!quizActive || quizFeedback || !currentTarget) return;
+        const normalizedInput = userInputValue.trim().replace(/\s+/g, "");
+        const targetCapital = currentTarget.capital.replace(/\s+/g, "");
+        const targetCapitalRuby = currentTarget.capitalRuby.replace(/\s+/g, "");
 
-        const isCorrect = (inputCleaned === kanjiAnswer || inputCleaned === rubyAnswer);
-
-        updatePrefStats(currentTarget.code * 1, isCorrect);
-
-        if (isCorrect) {
-          const newCombo = combo + 1; setCombo(newCombo);
-          if (newCombo > maxCombo) { setMaxCombo(newCombo); }
-          setCorrectAnswers(prev => prev + 1);
-          correctAnswersRef.current += 1;
-          if (isPractice) {
-            setScore(10);
-            scoreRef.current = 10;
-          } else {
-            const gained = 10 + (newCombo > 2 ? newCombo * 2 : 0);
-            setScore(prev => {
-              const next = prev + gained;
-              scoreRef.current = next;
-              return next;
-            });
-          }
-          
-          const feedbackMsg = (
-            <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の県庁所在地は【<ruby>{currentTarget.capital}<rt>{currentTarget.capitalRuby}</rt></ruby>】です！</span>
-          );
-
-          setQuizFeedback({ correct: true, message: feedbackMsg });
-          playPingPong();
-          setTotalQuestions(prev => prev + 1);
-          setTimeout(() => {
-            setQuizFeedback(null); setSelectedCode(null); setUserInputValue("");
-            const nextQueue = quizQueue.slice(1); setQuizQueue(nextQueue);
-            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) { endQuiz(true); } 
-            else { setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]); setTimeLeft(30); }
-          }, 150);
-        } else {
-          setCombo(0);
-          
-          const feedbackMsg = (
-            <span>正解は【<ruby>{currentTarget.capital}<rt>{currentTarget.capitalRuby}</rt></ruby>】でした。</span>
-          );
-
-          setQuizFeedback({ correct: false, message: feedbackMsg });
-          setTotalQuestions(prev => prev + 1);
-          setTimeout(() => {
-            setQuizFeedback(null); setSelectedCode(null); setUserInputValue("");
-            const nextQueue = quizQueue.slice(1); setQuizQueue(nextQueue);
-            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) { endQuiz(true); } 
-            else { setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]); setTimeLeft(30); }
-          }, 1800);
-        }
+        const isCorrect = normalizedInput === targetCapital || normalizedInput === targetCapitalRuby;
+        handleAnswerSelection(isCorrect ? currentTarget.code : -1);
       };
 
       const handleInputChange = (val) => {
         setUserInputValue(val);
-        
-        if (!quizActive || quizFeedback || quizFinished || quizMode !== "capitalInput" || !currentTarget) return;
-
-        const kanjiAnswer = currentTarget.capital.trim();
-        const rubyAnswer = currentTarget.capitalRuby.trim();
-        const inputCleaned = val.trim().replace(/\s+/g, '');
-
-        const isCorrect = (inputCleaned === kanjiAnswer || inputCleaned === rubyAnswer);
-
-        if (isCorrect) {
-          updatePrefStats(currentTarget.code * 1, true);
-
-          const newCombo = combo + 1; setCombo(newCombo);
-          if (newCombo > maxCombo) { setMaxCombo(newCombo); }
-          setCorrectAnswers(prev => prev + 1);
-          correctAnswersRef.current += 1;
-          if (isPractice) {
-            setScore(10);
-            scoreRef.current = 10;
-          } else {
-            const gained = 10 + (newCombo > 2 ? newCombo * 2 : 0);
-            setScore(prev => {
-              const next = prev + gained;
-              scoreRef.current = next;
-              return next;
-            });
-          }
-          
-          const feedbackMsg = (
-            <span><ruby>正解<rt>せいかい</rt></ruby>！【<ruby>{currentTarget.name}<rt>{currentTarget.ruby}</rt></ruby>】の県庁所在地は【<ruby>{currentTarget.capital}<rt>{currentTarget.capitalRuby}</rt></ruby>】です！</span>
-          );
-
-          setQuizFeedback({ correct: true, message: feedbackMsg });
-          playPingPong();
-          setTotalQuestions(prev => prev + 1);
-          setTimeout(() => {
-            setQuizFeedback(null); setSelectedCode(null); setUserInputValue("");
-            const nextQueue = quizQueue.slice(1); setQuizQueue(nextQueue);
-            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) { endQuiz(true); } 
-            else { setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]); setTimeLeft(30); }
-          }, 150);
-        }
-      };
-
-      const handleChoiceButtonClick = (choiceCode) => { handleChoiceValidation(choiceCode); };
-      const handlePrefectureClick = (code) => {
-        const codeNum = parseInt(code, 10);
-        if (!quizActive) { setSelectedCode(codeNum); return; }
-        if (quizMode === "touch") { handleChoiceValidation(codeNum); }
-      };
-
-      const playPingPong = () => {
-        try {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          if (!AudioContext) return;
-          const ctx = new AudioContext();
-          const osc1 = ctx.createOscillator(); const gain1 = ctx.createGain();
-          osc1.connect(gain1); gain1.connect(ctx.destination);
-          osc1.type = "sine"; osc1.frequency.setValueAtTime(659.25, ctx.currentTime);
-          gain1.gain.setValueAtTime(0.12, ctx.currentTime); gain1.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.12);
-          const osc2 = ctx.createOscillator(); const gain2 = ctx.createGain();
-          osc2.connect(gain2); gain2.connect(ctx.destination);
-          osc2.type = "sine"; osc2.frequency.setValueAtTime(783.99, ctx.currentTime + 0.08);
-          gain2.gain.setValueAtTime(0, ctx.currentTime); gain2.gain.setValueAtTime(0.12, ctx.currentTime + 0.08); gain2.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.4);
-          osc1.start(ctx.currentTime); osc1.stop(ctx.currentTime + 0.15); osc2.start(ctx.currentTime + 0.08); osc2.stop(ctx.currentTime + 0.5);
-        } catch (e) {}
-      };
-
-      const playRouletteTick = (freq = 440) => {
-        try {
-          const AudioContext = window.AudioContext || window.webkitAudioContext;
-          if (!AudioContext) return;
-          const ctx = new AudioContext();
-          const osc = ctx.createOscillator(); const gain = ctx.createGain();
-          osc.connect(gain); gain.connect(ctx.destination);
-          osc.type = "sine"; osc.frequency.setValueAtTime(freq, ctx.currentTime);
-          gain.gain.setValueAtTime(0.05, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.08);
-          osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.08);
-        } catch (e) {}
       };
 
       const handleRoulette = () => {
         if (isRouletteActive) return;
-        setIsRouletteActive(true); setFinalSelectedKey(null); setSelectedRegionKey(null);
-        const keys = Object.keys(REGION_GROUPS); const finalKey = keys[Math.floor(Math.random() * keys.length)];
-        let currentDelay = 60; let step = 0; const totalSteps = 10 + Math.floor(Math.random() * 3);
-        const tick = () => {
-          if (step < totalSteps) {
-            setRouletteKey(keys[step % keys.length]); playRouletteTick(440); step++; currentDelay += (step * 8); setTimeout(tick, currentDelay);
-          } else {
-            setRouletteKey(finalKey); setFinalSelectedKey(finalKey); playRouletteTick(880);
-            setTimeout(() => { setIsRouletteActive(false); setRouletteKey(null); setFinalSelectedKey(null); startQuiz("easy", finalKey); }, 700);
-          }
-        };
-        tick();
+        setIsRouletteActive(true);
+        setFinalSelectedKey(null);
+
+        const keys = Object.keys(REGION_GROUPS);
+        let counter = 0;
+        const interval = setInterval(() => {
+          setRouletteKey(keys[counter % keys.length]);
+          counter++;
+        }, 120);
+
+        setTimeout(() => {
+          clearInterval(interval);
+          const chosenKey = keys[Math.floor(Math.random() * keys.length)];
+          setRouletteKey(chosenKey);
+          setFinalSelectedKey(chosenKey);
+          setIsRouletteActive(false);
+
+          setTimeout(() => {
+            setRouletteKey(null);
+            startQuiz("easy", chosenKey, null, null, false);
+          }, 1000);
+        }, 2200);
       };
 
-      const currentChoices = useMemo(() => {
-        if (!currentTarget || (quizMode === "touch" || quizMode === "capitalInput")) return [];
-        let pool = [];
-        if (activeZoomRegionKey && REGION_GROUPS[activeZoomRegionKey]) {
-          pool = REGION_GROUPS[activeZoomRegionKey].prefs;
-        } else {
-          pool = Object.keys(PREFECTURE_DATA).map(Number);
-        }
-        const choicesSet = new Set([parseInt(currentTarget.code, 10)]);
-        const maxChoiceCount = Math.min(pool.length, 4);
-        while (choicesSet.size < maxChoiceCount) {
-          const randPref = pool[Math.floor(Math.random() * pool.length)];
-          choicesSet.add(randPref);
-        }
-        return Array.from(choicesSet).sort(() => Math.random() - 0.5);
-      }, [currentTarget, quizMode, activeZoomRegionKey]);
+      const startRecommendedQuiz = () => {
+        setQuizRecommendedActive(true);
+        const allCodes = Object.keys(PREFECTURE_DATA).map(Number);
+        
+        allCodes.sort((a, b) => {
+          const statA = prefStats[a] || { asked: 0, correct: 0 };
+          const statB = prefStats[b] || { asked: 0, correct: 0 };
+          const rateA = statA.asked > 0 ? statA.correct / statA.asked : 0;
+          const rateB = statB.asked > 0 ? statB.correct / statB.asked : 0;
+          return rateA - rateB;
+        });
+
+        const weakQueue = allCodes.slice(0, 10);
+        startQuiz("easy", null, 10, weakQueue, false);
+      };
 
       useEffect(() => {
-        if (quizActive && timeLeft > 0 && !quizFeedback && !quizFinished) {
-          timerRef.current = setTimeout(() => { setTimeLeft(prev => prev - 1); }, 1000);
-        } else if (timeLeft === 0 && quizActive && !quizFeedback && !quizFinished) {
-          setCombo(0); setQuizFeedback({ correct: false, message: `時間切(じかんぎ)れ！` }); setTotalQuestions(prev => prev + 1);
-          setTimeout(() => {
-            setQuizFeedback(null); setSelectedCode(null);
-            const nextQueue = quizQueue.slice(1); setQuizQueue(nextQueue);
-            if (nextQueue.length === 0 || totalQuestions + 1 >= maxQuestions) { endQuiz(true); } 
-            else { setCurrentTarget(PREFECTURE_DATA[nextQueue[0]]); setTimeLeft(30); }
-          }, 1800);
+        if (quizActive && !quizFeedback && !quizFinished) {
+          timerRef.current = setInterval(() => {
+            setTimeLeft(prev => {
+              if (prev <= 1) {
+                clearInterval(timerRef.current);
+                handleAnswerSelection(-1);
+                return 0;
+              }
+              return prev - 1;
+            });
+          }, 1000);
+        } else {
+          if (timerRef.current) clearInterval(timerRef.current);
         }
-        return () => clearTimeout(timerRef.current);
-      }, [quizActive, timeLeft, quizFeedback, quizFinished, maxQuestions, totalQuestions, quizQueue]);
+        return () => { if (timerRef.current) clearInterval(timerRef.current); };
+      }, [quizActive, quizFeedback, quizFinished, currentTarget]);
 
       useEffect(() => {
         if (quizActive && quizMode === "capitalInput" && !quizFeedback && inputRef.current) {
@@ -898,6 +781,322 @@
           return () => clearTimeout(focusTimeout);
         }
       }, [quizActive, quizMode, currentTarget, quizFeedback]);
+
+      const generateRoomCode = () => {
+        const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+        let res = '';
+        for (let i = 0; i < 8; i++) {
+          res += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+        return res;
+      };
+
+      const createRoom = async () => {
+        if (!firebaseAvailable || !user) {
+          setMultiNotice("通信機能が利用できません。");
+          return;
+        }
+        const name = multiNickname.trim() || "プレイヤー";
+        safeSetLocalStorage("japan_map_quiz_nickname", name);
+        const code = generateRoomCode();
+        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(code);
+        
+        const initialRoomData = {
+          roomId: code,
+          hostId: user.uid,
+          hostName: name,
+          status: 'waiting',
+          selectedQuizMode: 'touch',
+          selectedRegionKey: 'hokkaido_tohoku',
+          selectedNationalCount: 10,
+          questionQueue: [],
+          players: {
+            [user.uid]: {
+              id: user.uid,
+              nickname: name,
+              isHost: true,
+              score: 0,
+              correct: 0,
+              time: 0,
+              finished: false,
+              unlocked: {
+                isSpecialtiesUnlocked,
+                isCapitalUnlocked,
+                isCapitalInputUnlocked,
+                unlockedNationalCounts
+              }
+            }
+          },
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        };
+
+        try {
+          await roomRef.set(initialRoomData);
+          setCurrentRoomId(code);
+          setMultiNotice("");
+        } catch (e) {
+          console.error("Error creating room:", e);
+          setMultiNotice("部屋の作成に失敗しました。");
+        }
+      };
+
+      const joinRoom = async (codeToJoin) => {
+        if (!firebaseAvailable || !user) {
+          setMultiNotice("通信機能が利用できません。");
+          return;
+        }
+        const cleanCode = codeToJoin.trim().toLowerCase();
+        if (!cleanCode) {
+          setMultiNotice("部屋コードを入力してください。");
+          return;
+        }
+        const name = multiNickname.trim() || "プレイヤー";
+        safeSetLocalStorage("japan_map_quiz_nickname", name);
+        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(cleanCode);
+
+        try {
+          const docSnap = await roomRef.get();
+          if (!docSnap.exists) {
+            setMultiNotice("部屋が見つかりません。コードを確認してください。");
+            return;
+          }
+          const data = docSnap.data();
+          if (data.status !== 'waiting') {
+            setMultiNotice("この部屋はすでに対戦中または終了しています。");
+            return;
+          }
+
+          const updatePayload = {};
+          updatePayload[`players.${user.uid}`] = {
+            id: user.uid,
+            nickname: name,
+            isHost: false,
+            score: 0,
+            correct: 0,
+            time: 0,
+            finished: false,
+            unlocked: {
+              isSpecialtiesUnlocked,
+              isCapitalUnlocked,
+              isCapitalInputUnlocked,
+              unlockedNationalCounts
+            }
+          };
+
+          await roomRef.update(updatePayload);
+          setCurrentRoomId(cleanCode);
+          setMultiNotice("");
+        } catch (e) {
+          console.error("Error joining room:", e);
+          setMultiNotice("部屋への参加に失敗しました。");
+        }
+      };
+
+      const leaveRoom = async () => {
+        if (!currentRoomId || !user || !firebaseAvailable) {
+          setCurrentRoomId(null);
+          setMultiRoom(null);
+          setIsMultiMode(false);
+          return;
+        }
+        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
+        try {
+          if (multiRoom && multiRoom.hostId === user.uid) {
+            await roomRef.delete();
+          } else {
+            const updatePayload = {};
+            updatePayload[`players.${user.uid}`] = firebase.firestore.FieldValue.delete();
+            await roomRef.update(updatePayload);
+
+            if (multiRoom && multiRoom.players) {
+              const remaining = Object.keys(multiRoom.players).filter(id => id !== user.uid);
+              if (remaining.length === 0) {
+                await roomRef.delete();
+              }
+            }
+          }
+        } catch (e) {
+          console.error("Error leaving room:", e);
+        } finally {
+          setCurrentRoomId(null);
+          setMultiRoom(null);
+          setIsMultiMode(false);
+        }
+      };
+
+      useEffect(() => {
+        if (!currentRoomId || !firebaseAvailable || !user) return;
+
+        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
+        const unsubscribe = roomRef.onSnapshot((docSnap) => {
+          if (!docSnap.exists) {
+            setMultiRoom(null);
+            setCurrentRoomId(null);
+            setIsMultiMode(false);
+            setMultiNotice("部屋が解散されました。");
+            if (quizActive) {
+              setQuizActive(false);
+            }
+            return;
+          }
+          const data = docSnap.data();
+          setMultiRoom(data);
+
+          if (data.status === 'playing' && !quizActive && !quizFinished) {
+            setIsMultiMode(true);
+            setQuizChoiceMode(data.selectedQuizMode);
+            const isNational = data.selectedRegionKey === 'national';
+            const qCount = isNational ? (data.selectedNationalCount || 10) : (REGION_GROUPS[data.selectedRegionKey]?.prefs.length || 7);
+            
+            startQuiz("easy", isNational ? null : data.selectedRegionKey, qCount, data.questionQueue, false);
+          } else if (data.status === 'waiting' && quizFinished) {
+            setQuizFinished(false);
+            setQuizActive(false);
+          }
+        }, (err) => {
+          console.error("Room sync error:", err);
+        });
+
+        return () => unsubscribe();
+      }, [currentRoomId, user, quizActive, quizFinished]);
+
+      useEffect(() => {
+        const handleBeforeUnload = () => {
+          if (currentRoomId && user && firebaseAvailable) {
+            const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
+            if (multiRoom && multiRoom.hostId === user.uid) {
+              roomRef.delete();
+            } else {
+              const updatePayload = {};
+              updatePayload[`players.${user.uid}`] = firebase.firestore.FieldValue.delete();
+              roomRef.update(updatePayload);
+            }
+          }
+        };
+        window.addEventListener("beforeunload", handleBeforeUnload);
+        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+      }, [currentRoomId, user, multiRoom]);
+
+      const isMultiSpecialtiesAvailable = useMemo(() => {
+        if (!multiRoom || !multiRoom.players) return false;
+        return Object.values(multiRoom.players).every(p => p.unlocked?.isSpecialtiesUnlocked);
+      }, [multiRoom]);
+
+      const isMultiCapitalAvailable = useMemo(() => {
+        if (!multiRoom || !multiRoom.players) return false;
+        return Object.values(multiRoom.players).every(p => p.unlocked?.isCapitalUnlocked);
+      }, [multiRoom]);
+
+      const isMultiCapitalInputAvailable = useMemo(() => {
+        if (!multiRoom || !multiRoom.players) return false;
+        return Object.values(multiRoom.players).every(p => p.unlocked?.isCapitalInputUnlocked);
+      }, [multiRoom]);
+
+      const isMultiNational20Available = useMemo(() => {
+        if (!multiRoom || !multiRoom.players) return false;
+        return Object.values(multiRoom.players).every(p => p.unlocked?.unlockedNationalCounts?.c20);
+      }, [multiRoom]);
+
+      const isMultiNational30Available = useMemo(() => {
+        if (!multiRoom || !multiRoom.players) return false;
+        return Object.values(multiRoom.players).every(p => p.unlocked?.unlockedNationalCounts?.c30);
+      }, [multiRoom]);
+
+      const isMultiNational47Available = useMemo(() => {
+        if (!multiRoom || !multiRoom.players) return false;
+        return Object.values(multiRoom.players).every(p => p.unlocked?.unlockedNationalCounts?.c47);
+      }, [multiRoom]);
+
+      const handleMultiRandomCourse = () => {
+        const availableModes = ['touch', 'choices'];
+        if (isMultiSpecialtiesAvailable) availableModes.push('specialties');
+        if (isMultiCapitalAvailable) availableModes.push('capital');
+        if (isMultiCapitalInputAvailable) availableModes.push('capitalInput');
+
+        const randMode = availableModes[Math.floor(Math.random() * availableModes.length)];
+        setSelectedMultiQuizMode(randMode);
+
+        const regions = Object.keys(REGION_GROUPS);
+        const options = [...regions, 'national'];
+        const randOption = options[Math.floor(Math.random() * options.length)];
+        
+        if (randOption === 'national') {
+          setSelectedMultiRegionKey('national');
+          const availableCounts = [10];
+          if (isMultiNational20Available) availableCounts.push(20);
+          if (isMultiNational30Available) availableCounts.push(30);
+          if (isMultiNational47Available) availableCounts.push(47);
+          const randCount = availableCounts[Math.floor(Math.random() * availableCounts.length)];
+          setSelectedMultiNationalCount(randCount);
+        } else {
+          setSelectedMultiRegionKey(randOption);
+        }
+      };
+
+      const handleHostStartQuiz = async () => {
+        if (!currentRoomId || !multiRoom || !user) return;
+        
+        const isNational = selectedMultiRegionKey === 'national';
+        let queue = [];
+        if (isNational) {
+          const codes = Object.keys(PREFECTURE_DATA).map(Number);
+          queue = [...codes].sort(() => Math.random() - 0.5).slice(0, selectedMultiNationalCount);
+        } else {
+          const codes = [...REGION_GROUPS[selectedMultiRegionKey].prefs];
+          queue = [...codes].sort(() => Math.random() - 0.5);
+        }
+
+        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
+        const updatedPlayers = { ...multiRoom.players };
+        Object.keys(updatedPlayers).forEach(id => {
+          updatedPlayers[id] = {
+            ...updatedPlayers[id],
+            score: 0,
+            correct: 0,
+            time: 0,
+            finished: false
+          };
+        });
+
+        try {
+          await roomRef.update({
+            status: 'playing',
+            selectedQuizMode: selectedMultiQuizMode,
+            selectedRegionKey: selectedMultiRegionKey,
+            selectedNationalCount: selectedMultiNationalCount,
+            questionQueue: queue,
+            players: updatedPlayers
+          });
+        } catch (e) {
+          console.error("Error starting multi quiz:", e);
+        }
+      };
+
+      const handleHostRestartRoom = async () => {
+        if (!currentRoomId || !user) return;
+        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
+        try {
+          await roomRef.update({ status: 'waiting' });
+        } catch (e) {
+          console.error("Error restarting room:", e);
+        }
+      };
+
+      const sortedMultiPlayers = useMemo(() => {
+        if (!multiRoom || !multiRoom.players) return [];
+        const players = Object.values(multiRoom.players);
+        players.sort((a, b) => {
+          if ((b.correct || 0) !== (a.correct || 0)) return (b.correct || 0) - (a.correct || 0);
+          if ((b.score || 0) !== (a.score || 0)) return (b.score || 0) - (a.score || 0);
+          return (a.time || 999999) - (b.time || 999999);
+        });
+        return players;
+      }, [multiRoom]);
+
+      const myMultiRank = useMemo(() => {
+        if (!user || !sortedMultiPlayers.length) return 0;
+        return sortedMultiPlayers.findIndex(p => p.id === user.uid) + 1;
+      }, [sortedMultiPlayers, user]);
 
       useEffect(() => {
         const initAuthAndSync = async () => {
@@ -1058,6 +1257,7 @@
                   </div>
                 )}
 
+                {}
                 <svg className="geolonia-svg-map w-full h-[320px] sm:h-[380px] transition-all duration-700 ease-in-out" viewBox={currentViewBox} xmlns="http://www.w3.org/2000/svg">
                   <g className="svg-map" transform="matrix(1.028807, 0, 0, 1.028807, -47.544239, -28.806583)">
                     <g className="prefectures" transform="matrix(1, 0, 0, 1, 6, 18)">
@@ -1154,7 +1354,7 @@
                         {renderPrefectureLabel(25)}
                       </g>
                       <g onClick={() => handlePrefectureClick("24")} className={`mie prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 24 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("24")} stroke={selectedCode === 24 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 24 ? "3.5" : "1.5"} transform="translate(426, 683)" style={{ display: isPrefectureVisible("24") ? "block" : "none" }}>
-                        <polygon points="8 95 3 92 0 86 1 86 1 83 3 83 8 80 8 77 13 76 14 73 13 66 15 62 13 59 15 58 12 53 20 47 11 42 12 38 10 37 13 36 11 32 10 28 13 27 14 22 21 25 27 22 31 12 30 2 36 0 43 7 48 15 42 16 43 20 36 32 35 40 51 47 53 52 56 51 55 55 50 55 55 56 55 61 51 62 53 60 50 58 49 60 43 61 46 57 42 57 39 62 39 60 36 63 34 61 34 64 32 62 25 66 22 68 23 73 21 72 22 70 18 73 22 77 20 77 22 80 19 78 20 81 13 85"/>
+                        <polygon points="36 0 43 7 40 16 36 25 38 32 45 35 53 36 62 40 60 48 52 52 42 58 32 65 22 76 13 85 8 95 3 92 0 86 3 83 8 80 13 76 14 73 13 66 15 62 12 53 20 47 11 42 12 38 10 37 13 36 11 32 10 28 14 22 21 25 27 22 31 12 30 2"/>
                         {renderPrefectureLabel(24)}
                       </g>
                       <g onClick={() => handlePrefectureClick("22")} className={`shizuoka prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 22 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("22")} stroke={selectedCode === 22 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 22 ? "3.5" : "1.5"} transform="translate(511, 659)" style={{ display: isPrefectureVisible("22") ? "block" : "none" }}>
@@ -1238,7 +1438,7 @@
                         {renderPrefectureLabel(4)}
                       </g>
                       <g onClick={() => handlePrefectureClick("3")} className={`iwate prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 3 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("3")} stroke={selectedCode === 3 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 3 ? "3.5" : "1.5"} transform="translate(664, 354)" style={{ display: isPrefectureVisible("3") ? "block" : "none" }}>
-                        <polygon points="48 92 41 91 39 105 33 102 29 107 23 103 25 99 17 100 7 95 8 89 5 84 8 81 0 68 3 57 7 51 5 46 8 42 5 38 10 37 8 19 12 14 16 15 29 5 31 8 35 5 40 7 46 0 54 11 52 16 57 19 55 23 61 28 64 43 62 53 65 49 66 54 68 55 62 60 64 62 67 59 67 63 63 63 63 68 60 69 65 68 60 71 62 73 60 75 64 74 58 81 62 83 57 83 60 86 57 86 59 88 53 89 52 86 54 91 52 91 52 94 50 90"/>
+                        <polygon points="48 92 41 91 39 105 33 102 29 107 23 103 25 99 17 100 7 95 8 89 5 84 8 81 0 68 3 57 7 51 5 46 8 42 5 38 10 37 8 19 12 14 16 15 29 5 31 8 35 5 40 7 46 0 54 11 52 16 57 19 55 23 61 28 64 43 62 53 65 49 66 54 68 55 62 60 64 62 67 59 67 63 63 63 68 60 69 65 68 60 71 62 73 60 75 64 74 58 81 62 83 57 83 60 86 57 86 59 88 53 89 52 86 54 91 52 91 52 94 50 90"/>
                         {renderPrefectureLabel(3)}
                       </g>
                       <g onClick={() => handlePrefectureClick("2")} className={`aomori prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 2 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("2")} fillRule="nonzero" stroke={selectedCode === 2 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 2 ? "3.5" : "1.5"} transform="translate(624, 287)" style={{ display: isPrefectureVisible("2") ? "block" : "none" }}>
@@ -1250,7 +1450,6 @@
                         {renderPrefectureLabel(1)}
                       </g>
                     </g>
-                    {/* 分割境界線 */}
                     <g className="boundary-line" stroke="#94a3b8" strokeWidth="6" strokeLinejoin="round" style={{ display: showBoundaryLine ? "block" : "none" }}>
                       <line x1="320.227" y1="361.996" stroke="#1e293b" x2="582.351" y2="109.378" />
                       <line x1="277.337" y1="380.162" stroke="#1e293b" x2="46.213" y2="380.162" />
@@ -1258,6 +1457,7 @@
                   </g>
                 </svg>
 
+                {}
                 {quizActive && !quizFinished && (quizMode === "choices" || quizMode === "specialties" || quizMode === "capital") && (
                   <div className="w-full mt-2 bg-slate-50 border border-slate-200 p-2.5 rounded-2xl z-10 animate-fade-in">
                     <p className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 text-center tracking-wider"><ruby>選択肢<rt>せんたくし</rt></ruby>から選んでね！</p>
@@ -1317,9 +1517,10 @@
                   </div>
                 )}
 
+                {}
                 {!quizActive && !quizFinished && (
                   <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-4 text-center z-20 backdrop-blur-xs">
-                    <div className="bg-white border border-slate-200 p-6 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in">
+                    <div className="bg-white border border-slate-200 p-6 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in max-h-[92vh] overflow-y-auto my-auto">
                       {(() => {
                         if (showRegionSelect) {
                           return (
@@ -1420,7 +1621,7 @@
 
                         return (
                           <div>
-                            <h2 className="text-2xl sm:text-4xl font-black text-slate-800 mb-4 tracking-wider pt-2">ザ・<ruby>都道府県<rt className="text-[0.38em] sm:text-[0.45em]">とどうふけん</rt></ruby>47！</h2>
+                            <h2 className="text-2xl sm:text-4xl font-black text-slate-800 mb-4 tracking-wider pt-2 leading-relaxed">ザ・<ruby>都道府県<rt>とどうふけん</rt></ruby>47！</h2>
                             
                             {newlyUnlockedMsg && (
                               <div className="bg-red-50 border-2 border-red-400 text-red-600 font-black py-2 px-4 rounded-xl mb-4 animate-pulse text-sm sm:text-base">
@@ -1435,8 +1636,8 @@
                             
                             <div className="flex flex-col gap-2 mb-4 max-w-md mx-auto">
                               <div className="bg-slate-100 p-1 rounded-2xl flex gap-1 border border-slate-200 text-xs sm:text-sm font-black w-full">
-                                <button onClick={() => setQuizChoiceMode("touch")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "touch" ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>🗺️ タッチ</button>
-                                <button onClick={() => setQuizChoiceMode("choices")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "choices" ? "bg-white text-rose-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>🔢 <ruby>四択<rt>よんたく</rt></ruby></button>
+                                <button onClick={() => setQuizChoiceMode("touch")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "touch" ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>タッチ</button>
+                                <button onClick={() => setQuizChoiceMode("choices")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "choices" ? "bg-white text-rose-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>四択</button>
                                 
                                 <div className="relative flex-1 group">
                                   <button 
@@ -1444,7 +1645,7 @@
                                     onClick={() => setQuizChoiceMode("specialties")} 
                                     className={`w-full py-2 px-1 rounded-xl transition-all ${quizMode === "specialties" ? "bg-white text-amber-500 shadow-sm" : isSpecialtiesUnlocked ? "text-slate-500 hover:text-slate-800" : "text-slate-400 bg-slate-200/60 cursor-not-allowed"}`}
                                   >
-                                    {isSpecialtiesUnlocked ? <>🎁 <ruby>有名<rt>ゆうめい</rt></ruby>なもの</> : <>🔒 <ruby>有名<rt>ゆうめい</rt></ruby>なもの</>}
+                                    {isSpecialtiesUnlocked ? <><ruby>有名<rt>ゆうめい</rt></ruby>なもの</> : <>🔒 <ruby>有名<rt>ゆうめい</rt></ruby>なもの</>}
                                   </button>
                                   {!isSpecialtiesUnlocked && (
                                     <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-slate-900 text-white text-[10px] py-1.5 px-3 rounded-lg whitespace-nowrap shadow-lg z-50 pointer-events-none">
@@ -1461,7 +1662,7 @@
                                     onClick={() => setQuizChoiceMode("capital")} 
                                     className={`w-full py-2 px-1 rounded-xl transition-all ${quizMode === "capital" ? "bg-white text-blue-500 shadow-sm" : isCapitalUnlocked ? "text-slate-500 hover:text-slate-800" : "text-slate-400 bg-slate-200/60 cursor-not-allowed"}`}
                                   >
-                                    {isCapitalUnlocked ? <>🏙️ <ruby>県庁所在地（四択）<rt>けんちょうしょざいち（よんたく）</rt></ruby></> : <>🔒 <ruby>県庁所在地（四択）<rt>けんちょうしょざいち（よんたく）</rt></ruby></>}
+                                    {isCapitalUnlocked ? <>県庁所在地(四択)</> : <>🔒 県庁所在地(四択)</>}
                                   </button>
                                   {!isCapitalUnlocked && (
                                     <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-slate-900 text-white text-[10px] py-1.5 px-3 rounded-lg whitespace-nowrap shadow-lg z-50 pointer-events-none">
@@ -1476,7 +1677,7 @@
                                     onClick={() => setQuizChoiceMode("capitalInput")} 
                                     className={`w-full py-2 px-1 rounded-xl transition-all ${quizMode === "capitalInput" ? "bg-white text-indigo-500 shadow-sm" : isCapitalInputUnlocked ? "text-slate-500 hover:text-slate-800" : "text-slate-400 bg-slate-200/60 cursor-not-allowed"}`}
                                   >
-                                    {isCapitalInputUnlocked ? <>✏️ <ruby>県庁所在地（入力）<rt>けんちょうしょざいち（にゅうりょく）</rt></ruby></> : <>🔒 <ruby>県庁所在地（入力）<rt>けんちょうしょざいち（にゅうりょく）</rt></ruby></>}
+                                    {isCapitalInputUnlocked ? <>県庁所在地(入力)</> : <>🔒 県庁所在地(入力)</>}
                                   </button>
                                   {!isCapitalInputUnlocked && (
                                     <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block bg-slate-900 text-white text-[10px] py-1.5 px-3 rounded-lg whitespace-nowrap shadow-lg z-50 pointer-events-none">
@@ -1487,11 +1688,22 @@
                               </div>
                             </div>
                             
-                            <div className="flex flex-col gap-3">
-                              <button onClick={() => setShowPracticeSelect(true)} className="w-full bg-sky-500 hover:bg-sky-600 text-white font-extrabold py-3.5 px-6 rounded-2xl transition-all shadow-md text-lg sm:text-xl hover:-translate-y-0.5">🔰 <ruby>練習<rt>れんしゅう</rt></ruby>モード</button>
-                              <button onClick={() => setShowRegionSelect(true)} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-3.5 px-6 rounded-2xl transition-all shadow-md text-lg sm:text-xl hover:-translate-y-0.5">🗺️ <ruby>地方<rt>ちほう</rt></ruby>モード</button>
-                              <button onClick={() => setShowNationalSelect(true)} className="w-full bg-rose-500 hover:bg-rose-600 text-white font-extrabold py-3.5 px-6 rounded-2xl transition-all shadow-md text-lg sm:text-xl hover:-translate-y-0.5">🎌 <ruby>全国<rt>ぜんこく</rt></ruby>モード</button>
-                              <button onClick={startRecommendedQuiz} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold py-3.5 px-6 rounded-2xl transition-all shadow-md text-lg sm:text-xl hover:-translate-y-0.5">🔥 <ruby>おすすめ（弱点克服）<rt>おすすめ（じゃくてんこくふく）</rt></ruby>モード</button>
+                            <div className="flex flex-col gap-2.5">
+                              <button onClick={() => setShowPracticeSelect(true)} className="w-full bg-sky-500 hover:bg-sky-600 text-white font-extrabold py-1.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">🔰 <ruby>練習<rt>れんしゅう</rt></ruby>モード</button>
+                              
+                              <div className="grid grid-cols-2 gap-3">
+                                <button onClick={() => setShowRegionSelect(true)} className="w-full h-32 sm:h-36 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold p-3 rounded-2xl transition-all shadow-md text-base sm:text-lg hover:-translate-y-0.5 flex flex-col items-center justify-center gap-2">
+                                  <span className="text-3xl sm:text-4xl">🗺️</span>
+                                  <span><ruby>地方<rt>ちほう</rt></ruby>モード</span>
+                                </button>
+                                <button onClick={() => setShowNationalSelect(true)} className="w-full h-32 sm:h-36 bg-rose-500 hover:bg-rose-600 text-white font-extrabold p-3 rounded-2xl transition-all shadow-md text-base sm:text-lg hover:-translate-y-0.5 flex flex-col items-center justify-center gap-2">
+                                  <span className="text-3xl sm:text-4xl">🎌</span>
+                                  <span><ruby>全国<rt>ぜんこく</rt></ruby>モード</span>
+                                </button>
+                              </div>
+
+                              <button onClick={startRecommendedQuiz} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold py-1.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">🔥 おすすめ（<ruby>弱点克服<rt>じゃくてんこくふく</rt></ruby>）モード</button>
+                              <button onClick={() => setShowMultiplayer(true)} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-1.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">👥 <ruby>友<rt>とも</rt></ruby>だちと<ruby>対戦<rt>たいせん</rt></ruby></button>
                             </div>
                           </div>
                         );
@@ -1499,10 +1711,244 @@
                     </div>
                   </div>
                 )}
+
+                {}
+                {!quizActive && !quizFinished && showMultiplayer && (
+                  <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center p-4 text-center z-30 backdrop-blur-xs">
+                    <div className="bg-white border border-slate-200 p-5 sm:p-6 rounded-[2rem] max-w-xl w-full shadow-2xl animate-fade-in max-h-[92vh] overflow-y-auto flex flex-col justify-between">
+                      
+                      {!currentRoomId ? (
+                        <div>
+                          <h3 className="text-2xl font-black text-slate-800 mb-4 flex justify-center items-center gap-2">
+                            <span>👥</span> <ruby>友だちと対戦<rt>ともだちとたいせん</rt></ruby>
+                          </h3>
+
+                          {multiNotice && (
+                            <div className="bg-rose-50 border border-rose-300 text-rose-600 font-bold py-2 px-3 rounded-xl mb-4 text-xs sm:text-sm animate-pulse">
+                              {multiNotice}
+                            </div>
+                          )}
+
+                          <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl mb-5 text-left">
+                            <label className="block text-xs font-extrabold text-slate-500 uppercase mb-1">
+                              👤 <ruby>ニックネーム<rt>にっくねーむ</rt></ruby>
+                            </label>
+                            <input 
+                              type="text" 
+                              value={multiNickname} 
+                              onChange={(e) => setMultiNickname(e.target.value)} 
+                              placeholder="例：たろう" 
+                              maxLength={12}
+                              className="w-full py-2.5 px-3 rounded-xl border border-slate-300 font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            />
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-3 mb-6">
+                            <button 
+                              onClick={createRoom} 
+                              className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-extrabold py-3.5 px-4 rounded-2xl shadow-md transition-all text-base sm:text-lg hover:-translate-y-0.5"
+                            >
+                              ✨ <ruby>新しく部屋を作る<rt>あたらしくへやをつくる</rt></ruby>
+                            </button>
+
+                            <div className="relative my-2 flex items-center justify-center">
+                              <div className="border-t border-slate-200 w-full"></div>
+                              <span className="bg-white px-3 text-xs font-bold text-slate-400 absolute">または</span>
+                            </div>
+
+                            <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl flex flex-col gap-2">
+                              <label className="block text-xs font-extrabold text-slate-500 uppercase text-left">
+                                🔑 <ruby>部屋コード<rt>へやこーど</rt></ruby>を<ruby>入力<rt>にゅうりょく</rt></ruby>
+                              </label>
+                              <div className="flex gap-2">
+                                <input 
+                                  type="text" 
+                                  value={multiRoomCodeInput} 
+                                  onChange={(e) => setMultiRoomCodeInput(e.target.value)} 
+                                  placeholder="例：r8m9k2a4" 
+                                  className="flex-1 py-2 px-3 rounded-xl border border-slate-300 font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                                <button 
+                                  onClick={() => joinRoom(multiRoomCodeInput)} 
+                                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-2 px-5 rounded-xl transition-all shadow-sm text-sm"
+                                >
+                                  <ruby>入室<rt>にゅうしつ</rt></ruby>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          <button 
+                            onClick={() => { setShowMultiplayer(false); setMultiNotice(""); }} 
+                            className="w-full max-w-xs mx-auto block bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-2.5 px-4 rounded-xl transition-all text-sm text-center border border-slate-200"
+                          >
+                            🏠 ホームに<ruby>戻る<rt>もどる</rt></ruby>
+                          </button>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="bg-indigo-50 border border-indigo-200 p-3 rounded-2xl mb-4 text-center">
+                            <span className="text-xs font-bold text-indigo-500 uppercase tracking-wider block">対戦部屋コード</span>
+                            <div className="flex justify-center items-center gap-2 mt-0.5">
+                              <span className="text-2xl sm:text-3xl font-mono font-black text-indigo-700 tracking-widest">{currentRoomId}</span>
+                              <button 
+                                onClick={() => {
+                                  try {
+                                    const tempInput = document.createElement("input");
+                                    tempInput.value = currentRoomId;
+                                    document.body.appendChild(tempInput);
+                                    tempInput.select();
+                                    document.execCommand('copy');
+                                    document.body.removeChild(tempInput);
+                                    setMultiNotice("部屋コードをコピーしました！");
+                                  } catch (e) {}
+                                }}
+                                className="bg-indigo-200 hover:bg-indigo-300 text-indigo-800 text-[10px] font-extrabold py-1 px-2 rounded-lg transition-all"
+                              >
+                                コピー
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="mb-4 text-left">
+                            <h4 className="text-xs font-extrabold text-slate-500 uppercase mb-1 flex justify-between items-center">
+                              <span>👥 <ruby>参加メンバー<rt>さんかめんばー</rt></ruby></span>
+                              <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full text-[10px] font-black">
+                                {multiRoom ? Object.keys(multiRoom.players || {}).length : 0} 人
+                              </span>
+                            </h4>
+                            <div className="bg-slate-50 border border-slate-200 rounded-2xl p-2.5 max-h-36 overflow-y-auto grid grid-cols-2 gap-1.5">
+                              {multiRoom && multiRoom.players && Object.values(multiRoom.players).map(p => (
+                                <div key={p.id} className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-xl border border-slate-100 text-xs font-bold text-slate-800 truncate">
+                                  <span>{p.isHost ? "👑" : "👤"}</span>
+                                  <span className="truncate">{p.nickname}</span>
+                                  {p.id === user?.uid && <span className="text-[9px] text-rose-500 font-bold ml-auto">(自分)</span>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+
+                          {multiRoom && multiRoom.hostId === user?.uid ? (
+                            <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl mb-4 text-left">
+                              <h4 className="text-xs font-extrabold text-slate-600 mb-2 flex justify-between items-center">
+                                <span>⚙️ <ruby>対戦コース選択<rt>たいせんこーすせんたく</rt></ruby>（オーナー）</span>
+                                <button 
+                                  onClick={handleMultiRandomCourse} 
+                                  className="bg-amber-400 hover:bg-amber-500 text-slate-900 font-extrabold text-[11px] py-1 px-2.5 rounded-lg shadow-xs transition-all"
+                                >
+                                  🎲 <ruby>おまかせ<rt>おまかせ</rt></ruby>
+                                </button>
+                              </h4>
+
+                              <div className="grid grid-cols-3 gap-1 mb-2.5 text-[11px] font-extrabold">
+                                <button onClick={() => setSelectedMultiQuizMode('touch')} className={`py-1.5 rounded-lg border ${selectedMultiQuizMode === 'touch' ? "bg-emerald-500 text-white border-emerald-600 shadow-xs" : "bg-white text-slate-600 border-slate-200"}`}>🗺️ タッチ</button>
+                                <button onClick={() => setSelectedMultiQuizMode('choices')} className={`py-1.5 rounded-lg border ${selectedMultiQuizMode === 'choices' ? "bg-rose-500 text-white border-rose-600 shadow-xs" : "bg-white text-slate-600 border-slate-200"}`}>🔢 四択</button>
+                                <button 
+                                  disabled={!isMultiSpecialtiesAvailable} 
+                                  onClick={() => setSelectedMultiQuizMode('specialties')} 
+                                  className={`py-1.5 rounded-lg border ${selectedMultiQuizMode === 'specialties' ? "bg-amber-500 text-white border-amber-600 shadow-xs" : isMultiSpecialtiesAvailable ? "bg-white text-slate-600 border-slate-200" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
+                                >
+                                  {isMultiSpecialtiesAvailable ? <>🎁 <ruby>有名<rt>ゆうめい</rt></ruby>なもの</> : <>🔒 <ruby>有名<rt>ゆうめい</rt></ruby>なもの</>}
+                                </button>
+                                <button 
+                                  disabled={!isMultiCapitalAvailable} 
+                                  onClick={() => setSelectedMultiQuizMode('capital')} 
+                                  className={`col-span-1.5 py-1.5 rounded-lg border ${selectedMultiQuizMode === 'capital' ? "bg-blue-500 text-white border-blue-600 shadow-xs" : isMultiCapitalAvailable ? "bg-white text-slate-600 border-slate-200" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
+                                >
+                                  {isMultiCapitalAvailable ? "🏙️ 県庁所在地(四択)" : "🔒 県庁所在地(四択)"}
+                                </button>
+                                <button 
+                                  disabled={!isMultiCapitalInputAvailable} 
+                                  onClick={() => setSelectedMultiQuizMode('capitalInput')} 
+                                  className={`col-span-1.5 py-1.5 rounded-lg border ${selectedMultiQuizMode === 'capitalInput' ? "bg-indigo-500 text-white border-indigo-600 shadow-xs" : isMultiCapitalInputAvailable ? "bg-white text-slate-600 border-slate-200" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
+                                >
+                                  {isMultiCapitalInputAvailable ? "✏️ 県庁所在地(入力)" : "🔒 県庁所在地(入力)"}
+                                </button>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-1 text-[10px] font-bold">
+                                {Object.entries(REGION_GROUPS).map(([key, group]) => (
+                                  <button 
+                                    key={key} 
+                                    onClick={() => setSelectedMultiRegionKey(key)} 
+                                    className={`py-1.5 px-2 rounded-lg border truncate ${selectedMultiRegionKey === key ? "bg-indigo-600 text-white border-indigo-700 shadow-xs font-black" : "bg-white text-slate-700 border-slate-200"}`}
+                                  >
+                                    {group.name}
+                                  </button>
+                                ))}
+                                <button 
+                                  onClick={() => setSelectedMultiRegionKey('national')} 
+                                  className={`col-span-2 py-1.5 px-2 rounded-lg border truncate ${selectedMultiRegionKey === 'national' ? "bg-rose-600 text-white border-rose-700 shadow-xs font-black" : "bg-white text-slate-700 border-slate-200"}`}
+                                >
+                                  🎌 全国モード
+                                </button>
+                              </div>
+
+                              {selectedMultiRegionKey === 'national' && (
+                                <div className="grid grid-cols-4 gap-1 mt-2 text-[10px] font-bold">
+                                  <button 
+                                    onClick={() => setSelectedMultiNationalCount(10)} 
+                                    className={selectedMultiNationalCount === 10 ? "py-1 rounded-lg border bg-rose-500 text-white" : "py-1 rounded-lg border bg-white"}
+                                  >
+                                    10問
+                                  </button>
+                                  <button 
+                                    disabled={!isMultiNational20Available} 
+                                    onClick={() => setSelectedMultiNationalCount(20)} 
+                                    className={selectedMultiNationalCount === 20 ? "py-1 rounded-lg border bg-rose-500 text-white" : isMultiNational20Available ? "py-1 rounded-lg border bg-white" : "py-1 rounded-lg border bg-slate-200 text-slate-400 cursor-not-allowed"}
+                                  >
+                                    {isMultiNational20Available ? "20問" : "🔒 20問"}
+                                  </button>
+                                  <button 
+                                    disabled={!isMultiNational30Available} 
+                                    onClick={() => setSelectedMultiNationalCount(30)} 
+                                    className={selectedMultiNationalCount === 30 ? "py-1 rounded-lg border bg-rose-500 text-white" : isMultiNational30Available ? "py-1 rounded-lg border bg-white" : "py-1 rounded-lg border bg-slate-200 text-slate-400 cursor-not-allowed"}
+                                  >
+                                    {isMultiNational30Available ? "30問" : "🔒 30問"}
+                                  </button>
+                                  <button 
+                                    disabled={!isMultiNational47Available} 
+                                    onClick={() => setSelectedMultiNationalCount(47)} 
+                                    className={selectedMultiNationalCount === 47 ? "py-1 rounded-lg border bg-rose-500 text-white" : isMultiNational47Available ? "py-1 rounded-lg border bg-white" : "py-1 rounded-lg border bg-slate-200 text-slate-400 cursor-not-allowed"}
+                                  >
+                                    {isMultiNational47Available ? "47問" : "🔒 47問"}
+                                  </button>
+                                </div>
+                              )}
+
+                              <button 
+                                onClick={handleHostStartQuiz} 
+                                className="w-full mt-3 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-black py-3 px-4 rounded-xl shadow-md transition-all text-base text-center animate-pulse"
+                              >
+                                🚀 <ruby>対戦スタート<rt>たいせんすたーと</rt></ruby>
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="bg-slate-50 border border-slate-200 p-6 rounded-2xl mb-4 text-center">
+                              <p className="font-extrabold text-slate-700 text-sm animate-pulse mb-1">
+                                ⏳ オーナーが対戦コースを選択中...
+                              </p>
+                              <p className="text-xs text-slate-400 font-bold">
+                                スタートするまでそのままお待ちください
+                              </p>
+                            </div>
+                          )}
+
+                          <button 
+                            onClick={leaveRoom} 
+                            className="w-full max-w-xs mx-auto block bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold py-2.5 px-4 rounded-xl transition-all text-sm text-center border border-rose-200 active:scale-95"
+                          >
+                            🚪 <ruby>対戦をやめる<rt>たいせんをやめる</rt></ruby>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
-            {/* 右側：コントロールパネル / リザルト / 図鑑モード */}
+            {}
             <aside className={quizFinished ? "lg:col-span-12 max-w-2xl mx-auto w-full" : "lg:col-span-5 flex flex-col gap-4 w-full"}>
               
               {quizActive && !quizFinished && (
@@ -1542,8 +1988,70 @@
                 </div>
               )}
 
+              {}
               {quizFinished && (
                 <div className={`${isPractice ? "bg-amber-50 border-amber-200" : "bg-white border-slate-200"} border rounded-[2rem] p-6 shadow-md flex flex-col gap-4 animate-fade-in max-w-2xl mx-auto w-full`}>
+                  
+                  {isMultiMode && multiRoom ? (
+                    <div className="bg-indigo-50/70 border-2 border-indigo-300 rounded-2xl p-4 text-center mb-2 flex flex-col gap-3">
+                      <h3 className="text-xl font-black text-indigo-900 flex justify-center items-center gap-2">
+                        <span>⚔️</span> <ruby>対戦結果<rt>たいせんけっか</rt></ruby>
+                      </h3>
+
+                      {sortedMultiPlayers.length === 2 ? (
+                        <div className="py-2">
+                          {(() => {
+                            const p1 = sortedMultiPlayers[0];
+                            const p2 = sortedMultiPlayers[1];
+                            const isDraw = (p1.correct === p2.correct && p1.score === p2.score && p1.time === p2.time);
+                            if (isDraw) {
+                              return <div className="text-3xl font-black text-amber-600 animate-bounce">🤝 <ruby>ひきわけ<rt>ひきわけ</rt></ruby>！</div>;
+                            }
+                            if (myMultiRank === 1) {
+                              return <div className="text-4xl font-black text-emerald-600 animate-bounce">🎉 <ruby>勝ち<rt>かち</rt></ruby>！</div>;
+                            }
+                            return <div className="text-3xl font-black text-rose-500">😢 <ruby>負け<rt>まけ</rt></ruby></div>;
+                          })()}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col gap-2">
+                          <div className="bg-white p-3 rounded-xl border border-indigo-200">
+                            <span className="text-xs font-bold text-slate-500 block mb-1">あなたの順位</span>
+                            <span className="text-3xl font-black text-indigo-600">第 {myMultiRank} 位</span>
+                            <span className="text-xs font-bold text-slate-500 ml-1">/ 全 {sortedMultiPlayers.length} 人</span>
+                          </div>
+
+                          <div className="bg-white p-2.5 rounded-xl border border-indigo-200 text-left">
+                            <span className="text-[10px] font-extrabold text-slate-400 block mb-1">🏆 上位プレイヤー (TOP 3)</span>
+                            <div className="flex flex-col gap-1">
+                              {sortedMultiPlayers.slice(0, 3).map((p, idx) => (
+                                <div key={p.id} className="flex justify-between items-center text-xs font-bold bg-slate-50 px-2.5 py-1.5 rounded-lg">
+                                  <span className="flex items-center gap-1.5 truncate">
+                                    <span>{idx === 0 ? "🥇" : idx === 1 ? "🥈" : "🥉"}</span>
+                                    <span className="truncate">{p.nickname}</span>
+                                    {p.id === user?.uid && <span className="text-[9px] text-rose-500 font-bold">(自分)</span>}
+                                  </span>
+                                  <span className="text-indigo-700 font-extrabold">{p.correct || 0}問正解 ({p.score || 0}pt)</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {multiRoom.hostId === user?.uid ? (
+                        <button 
+                          onClick={handleHostRestartRoom} 
+                          className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3 px-4 rounded-xl transition-all shadow-md text-sm text-center animate-pulse"
+                        >
+                          🔄 <ruby>もう1回対戦する<rt>もういっかいたいせんする</rt></ruby>
+                        </button>
+                      ) : (
+                        <p className="text-xs text-indigo-600 font-bold">オーナーの再スタート待ちです...</p>
+                      )}
+                    </div>
+                  ) : null}
+
                   <div className="text-center">
                     {selectedRegionKey && REGION_GROUPS[selectedRegionKey] ? <p className="text-lg sm:text-xl font-black text-slate-700">【<ruby>{REGION_GROUPS[selectedRegionKey].name}<rt>{REGION_GROUPS[selectedRegionKey].ruby}</rt></ruby>】<ruby>地方挑戦<rt>ちほうちょうせん</rt></ruby>お<ruby>疲<rt>つか</rt></ruby>れさまでした！</p> : <p className="text-lg sm:text-xl font-black text-slate-700">{maxQuestions}<ruby>問<rt>もん</rt></ruby>のチャレンジお<ruby>疲<rt>つか</rt></ruby>れさまでした！</p>}
                   </div>
@@ -1575,7 +2083,7 @@
 
                   {!isPractice && (
                     <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 text-center">
-                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider"><ruby>称号<rt>しょうごう</rt></ruby></p>
+                      <p className="text-[10px] text-slate-400 font-bold uppercase"><ruby>称号<rt>しょうごう</rt></ruby></p>
                       <h4 className={`text-xl sm:text-2xl font-black mt-1 ${getRankEvaluator().color}`}>{getRankEvaluator().title}</h4>
                       <p className="text-xs text-slate-600 mt-1.5 font-medium leading-relaxed">{getRankEvaluator().desc}</p>
                     </div>
@@ -1593,8 +2101,10 @@
                   </div>
 
                   <div className="flex flex-col gap-2 mt-1">
-                    <button onClick={() => startQuiz(quizDifficulty, selectedRegionKey, maxQuestions, quizQueue.length ? quizQueue : null, isPractice)} className="w-full bg-rose-500 hover:bg-rose-600 text-white font-extrabold py-3 px-5 rounded-xl transition-all shadow-md text-sm text-center">🔄 <ruby>同<rt>おな</rt></ruby>じ<ruby>条件<rt>じょうけん</rt></ruby>でもう<ruby>一度遊<rt>いちどあそ</rt></ruby>ぶ</button>
-                    <button onClick={() => { setQuizFinished(false); setSelectedRegionKey(null); setIsPractice(false); }} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-3 px-5 rounded-xl transition-all text-sm text-center border border-slate-200">🏠 ホームに<ruby>戻<rt>もど</rt></ruby>る</button>
+                    {!isMultiMode && (
+                      <button onClick={() => startQuiz(quizDifficulty, selectedRegionKey, maxQuestions, quizQueue.length ? quizQueue : null)} className="w-full bg-rose-500 hover:bg-rose-600 text-white font-extrabold py-3 px-5 rounded-xl transition-all shadow-md text-sm text-center">🔄 <ruby>同<rt>おな</rt></ruby>じ<ruby>条件<rt>じょうけん</rt></ruby>でもう<ruby>一度遊<rt>いちどあそ</rt></ruby>ぶ</button>
+                    )}
+                    <button onClick={() => { if (isMultiMode) leaveRoom(); setQuizFinished(false); setSelectedRegionKey(null); }} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-3 px-5 rounded-xl transition-all text-sm text-center border border-slate-200">{isMultiMode ? "🚪 対戦をぬけてホームに戻る" : "🏠 ホームに戻る"}</button>
                   </div>
                 </div>
               )}
