@@ -13,10 +13,9 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <!-- Canvas Confetti for celebrations -->
   <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
-  <!-- Firebase App (Compat) and Firestore/Auth SDK -->
-  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+  <!-- MQTT.js and PeerJS for Realtime Multiplayer -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <!-- Google Fonts (Noto Sans JP) -->
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght=300;400;500;700;900&display=swap" rel="stylesheet">
   
@@ -65,34 +64,14 @@
       try { localStorage.setItem(key, value); } catch (e) {}
     };
 
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'japan-map-quiz-default';
-    const defaultFirebaseConfig = {
-      apiKey: "",
-      authDomain: "default-app-id.firebaseapp.com",
-      projectId: "default-app-id",
-      storageBucket: "default-app-id.appspot.com",
-      messagingSenderId: "1234567890",
-      appId: "1:1234567890:web:1234567890"
-    };
-
-    const firebaseConfig = typeof __firebase_config !== 'undefined' 
-      ? (typeof __firebase_config === 'string' ? JSON.parse(__firebase_config) : __firebase_config)
-      : defaultFirebaseConfig;
-
-    let auth = null;
-    let db = null;
-    let firebaseAvailable = false;
-
-    try {
-      if (typeof firebase !== 'undefined' && firebase.apps && firebaseConfig.apiKey) {
-        if (!firebase.apps.length) { firebase.initializeApp(firebaseConfig); }
-        auth = firebase.auth();
-        db = firebase.firestore();
-        firebaseAvailable = true;
+    const getUserId = () => {
+      let uid = safeGetLocalStorage("japan_map_quiz_uid", "");
+      if (!uid) {
+        uid = "usr_" + Math.random().toString(36).substring(2, 9) + Date.now().toString(36);
+        safeSetLocalStorage("japan_map_quiz_uid", uid);
       }
-    } catch (e) {
-      console.warn("Firebase failed to initialize. Falling back to LocalStorage.", e);
-    }
+      return uid;
+    };
 
     const PREFECTURE_DATA = {
       1: { code: "1", name: "北海道", ruby: "ほっかいどう", english: "Hokkaido", capital: "札幌市", capitalRuby: "さっぽろし", region: "hokkaido", regionName: "北海道", regionRuby: "ほっかいどう", specialties: [{ k: "海鮮丼", r: "かいせんどん" }, { k: "ジンギスカン", r: "ジンギスカン" }, { k: "夕張メロン", r: "ゆうばりメロン" }] },
@@ -231,8 +210,8 @@
     };
 
     function App() {
-      const [user, setUser] = useState(null);
-      const [loading, setLoading] = useState(true);
+      const myUserId = useMemo(() => getUserId(), []);
+      const [loading, setLoading] = useState(false);
       
       const [totalScore, setTotalScore] = useState(() => parseInt(safeGetLocalStorage("japan_map_quiz_total_score", "0"), 10));
       const [bestScore, setBestScore] = useState(() => parseInt(safeGetLocalStorage("japan_map_quiz_best_score", "0"), 10));
@@ -326,6 +305,13 @@
       const [newRecords, setNewRecords] = useState({ score: false, correct: false, combo: false, time: false });
       const timerRef = useRef(null);
       const inputRef = useRef(null);
+
+      // WebRTC PeerJS & BroadcastChannel Refs
+      const peerRef = useRef(null);
+      const hostConnsRef = useRef([]);
+      const guestConnRef = useRef(null);
+      const multiRoomRef = useRef(null);
+      const broadcastChannelRef = useRef(null);
 
       const selectedPref = selectedCode ? PREFECTURE_DATA[selectedCode] : null;
 
@@ -445,13 +431,6 @@
           };
           const nextStats = { ...prev, [code]: updated };
           safeSetLocalStorage("japan_map_quiz_pref_stats", JSON.stringify(nextStats));
-          
-          if (firebaseAvailable && user) {
-            try {
-              const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/scores/stats`);
-              docRef.set({ prefStats: nextStats }, { merge: true }).catch(err => console.error(err));
-            } catch (e) {}
-          }
           return nextStats;
         });
       };
@@ -481,6 +460,25 @@
         setUserInputValue("");
       };
 
+      const broadcastRoomState = (newRoom) => {
+        setMultiRoom(newRoom);
+        multiRoomRef.current = newRoom;
+        
+        // Broadcast via PeerJS Connections
+        hostConnsRef.current.forEach(c => {
+          if (c && c.open) {
+            try { c.send({ type: 'ROOM_STATE', room: newRoom }); } catch(e){}
+          }
+        });
+
+        // Broadcast via BroadcastChannel local fallback
+        if (broadcastChannelRef.current) {
+          try {
+            broadcastChannelRef.current.postMessage({ type: 'ROOM_STATE', room: newRoom, senderId: myUserId });
+          } catch(e){}
+        }
+      };
+
       const endQuiz = (isFinished = false) => {
         setQuizActive(false);
         setUserInputValue("");
@@ -497,16 +495,45 @@
             return newTotalScore;
           });
 
-          if (isMultiMode && currentRoomId && user && firebaseAvailable) {
-            try {
-              const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
-              const updateObj = {};
-              updateObj[`players.${user.uid}.score`] = scoreRef.current;
-              updateObj[`players.${user.uid}.correct`] = correctAnswersRef.current;
-              updateObj[`players.${user.uid}.time`] = duration;
-              updateObj[`players.${user.uid}.finished`] = true;
-              roomRef.update(updateObj).catch(err => console.error(err));
-            } catch (e) {}
+          if (isMultiMode && currentRoomId) {
+            if (multiRoom && multiRoom.hostId === myUserId) {
+              const current = multiRoomRef.current || multiRoom;
+              if (current && current.players[myUserId]) {
+                const updatedPlayers = {
+                  ...current.players,
+                  [myUserId]: {
+                    ...current.players[myUserId],
+                    score: gainedScore,
+                    correct: correctAnswersRef.current,
+                    time: duration,
+                    finished: true
+                  }
+                };
+                const updatedRoom = { ...current, players: updatedPlayers };
+                broadcastRoomState(updatedRoom);
+              }
+            } else if (guestConnRef.current && guestConnRef.current.open) {
+              try {
+                guestConnRef.current.send({
+                  type: 'UPDATE_SCORE',
+                  userId: myUserId,
+                  score: gainedScore,
+                  correct: correctAnswersRef.current,
+                  time: duration
+                });
+              } catch(e){}
+            } else if (broadcastChannelRef.current) {
+              try {
+                broadcastChannelRef.current.postMessage({
+                  type: 'UPDATE_SCORE',
+                  userId: myUserId,
+                  score: gainedScore,
+                  correct: correctAnswersRef.current,
+                  time: duration,
+                  senderId: myUserId
+                });
+              } catch(e){}
+            }
           }
           
           let isNewScore = false; 
@@ -586,21 +613,6 @@
             }, 3800);
           } else {
             setShowKusudama(false);
-          }
-
-          if (firebaseAvailable && user) {
-            try {
-              const docRef = db.doc(`artifacts/${appId}/users/${user.uid}/scores/stats`);
-              docRef.set({
-                totalScore: (totalScore + gainedScore),
-                bestScore: Math.max(bestScore, gainedScore),
-                bestCorrect: Math.max(bestCorrect, correctAnswersRef.current),
-                bestCombo: Math.max(bestCombo, maxCombo),
-                bestTime: Math.min(bestTime, (correctAnswersRef.current === maxQuestions ? duration : bestTime)),
-                regionBestScores: updatedRegionBestScores,
-                regionBestTimes: updatedRegionBestTimes
-              }, { merge: true }).catch(err => console.error(err));
-            } catch (e) {}
           }
         }
       };
@@ -791,19 +803,96 @@
         return res;
       };
 
-      const createRoom = async () => {
-        if (!firebaseAvailable || !user) {
-          setMultiNotice("通信機能が利用できません。");
-          return;
+      const handleHostReceiveData = (conn, data) => {
+        const current = multiRoomRef.current;
+        if (!current) return;
+
+        if (data.type === 'JOIN') {
+          const updatedPlayers = {
+            ...current.players,
+            [data.player.id]: data.player
+          };
+          if (conn) conn.guestUserId = data.player.id;
+          const updatedRoom = { ...current, players: updatedPlayers };
+          broadcastRoomState(updatedRoom);
+        } else if (data.type === 'UPDATE_SCORE') {
+          if (!current.players[data.userId]) return;
+          const updatedPlayers = {
+            ...current.players,
+            [data.userId]: {
+              ...current.players[data.userId],
+              score: data.score,
+              correct: data.correct,
+              time: data.time,
+              finished: true
+            }
+          };
+          const updatedRoom = { ...current, players: updatedPlayers };
+          broadcastRoomState(updatedRoom);
+        } else if (data.type === 'LEAVE') {
+          if (data.userId && current.players[data.userId]) {
+            const updatedPlayers = { ...current.players };
+            delete updatedPlayers[data.userId];
+            const updatedRoom = { ...current, players: updatedPlayers };
+            broadcastRoomState(updatedRoom);
+          }
         }
+      };
+
+      const handleHostGuestDisconnect = (conn) => {
+        if (conn && conn.guestUserId && multiRoomRef.current) {
+          const current = multiRoomRef.current;
+          const updatedPlayers = { ...current.players };
+          delete updatedPlayers[conn.guestUserId];
+          const updatedRoom = { ...current, players: updatedPlayers };
+          broadcastRoomState(updatedRoom);
+        }
+        hostConnsRef.current = hostConnsRef.current.filter(c => c !== conn);
+      };
+
+      const setupBroadcastChannel = (code) => {
+        if (typeof BroadcastChannel !== 'undefined') {
+          try {
+            if (broadcastChannelRef.current) broadcastChannelRef.current.close();
+            const bc = new BroadcastChannel('jp_map_quiz_room_' + code);
+            broadcastChannelRef.current = bc;
+            bc.onmessage = (event) => {
+              const data = event.data;
+              if (data && data.senderId !== myUserId) {
+                if (data.type === 'ROOM_STATE') {
+                  setMultiRoom(data.room);
+                  multiRoomRef.current = data.room;
+                } else if (data.type === 'JOIN_REQ') {
+                  if (multiRoomRef.current && multiRoomRef.current.hostId === myUserId) {
+                    handleHostReceiveData(null, { type: 'JOIN', player: data.player });
+                  }
+                } else if (data.type === 'UPDATE_SCORE') {
+                  if (multiRoomRef.current && multiRoomRef.current.hostId === myUserId) {
+                    handleHostReceiveData(null, data);
+                  }
+                } else if (data.type === 'ROOM_CLOSED') {
+                  setMultiRoom(null);
+                  setCurrentRoomId(null);
+                  setIsMultiMode(false);
+                  setMultiNotice("部屋が解散されました。");
+                  if (quizActive) setQuizActive(false);
+                }
+              }
+            };
+          } catch(e){}
+        }
+      };
+
+      const createRoom = () => {
         const name = multiNickname.trim() || "プレイヤー";
         safeSetLocalStorage("japan_map_quiz_nickname", name);
         const code = generateRoomCode();
-        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(code);
-        
-        const initialRoomData = {
+        setCurrentRoomId(code);
+        setMultiNotice("");
+
+        const initialRoom = {
           roomId: code,
-          hostId: user.uid,
+          hostId: myUserId,
           hostName: name,
           status: 'waiting',
           selectedQuizMode: 'touch',
@@ -811,8 +900,8 @@
           selectedNationalCount: 10,
           questionQueue: [],
           players: {
-            [user.uid]: {
-              id: user.uid,
+            [myUserId]: {
+              id: myUserId,
               nickname: name,
               isHost: true,
               score: 0,
@@ -826,25 +915,35 @@
                 unlockedNationalCounts
               }
             }
-          },
-          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+          }
         };
 
-        try {
-          await roomRef.set(initialRoomData);
-          setCurrentRoomId(code);
-          setMultiNotice("");
-        } catch (e) {
-          console.error("Error creating room:", e);
-          setMultiNotice("部屋の作成に失敗しました。");
+        setMultiRoom(initialRoom);
+        multiRoomRef.current = initialRoom;
+        hostConnsRef.current = [];
+
+        setupBroadcastChannel(code);
+
+        // Attempt PeerJS WebRTC Connection
+        if (typeof Peer !== 'undefined') {
+          try {
+            const fullPeerId = 'jp-map-quiz-room-' + code;
+            if (peerRef.current) peerRef.current.destroy();
+            const peer = new Peer(fullPeerId);
+            peerRef.current = peer;
+            peer.on('connection', (conn) => {
+              hostConnsRef.current.push(conn);
+              conn.on('data', (data) => handleHostReceiveData(conn, data));
+              conn.on('close', () => handleHostGuestDisconnect(conn));
+              conn.on('error', () => handleHostGuestDisconnect(conn));
+            });
+          } catch (e) {
+            console.warn("PeerJS host init skipped or errored:", e);
+          }
         }
       };
 
-      const joinRoom = async (codeToJoin) => {
-        if (!firebaseAvailable || !user) {
-          setMultiNotice("通信機能が利用できません。");
-          return;
-        }
+      const joinRoom = (codeToJoin) => {
         const cleanCode = codeToJoin.trim().toLowerCase();
         if (!cleanCode) {
           setMultiNotice("部屋コードを入力してください。");
@@ -852,130 +951,133 @@
         }
         const name = multiNickname.trim() || "プレイヤー";
         safeSetLocalStorage("japan_map_quiz_nickname", name);
-        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(cleanCode);
 
-        try {
-          const docSnap = await roomRef.get();
-          if (!docSnap.exists) {
-            setMultiNotice("部屋が見つかりません。コードを確認してください。");
-            return;
+        setCurrentRoomId(cleanCode);
+        setMultiNotice("対戦相手を探しています...");
+
+        setupBroadcastChannel(cleanCode);
+
+        const myPlayerData = {
+          id: myUserId,
+          nickname: name,
+          isHost: false,
+          score: 0,
+          correct: 0,
+          time: 0,
+          finished: false,
+          unlocked: {
+            isSpecialtiesUnlocked,
+            isCapitalUnlocked,
+            isCapitalInputUnlocked,
+            unlockedNationalCounts
           }
-          const data = docSnap.data();
-          if (data.status !== 'waiting') {
-            setMultiNotice("この部屋はすでに対戦中または終了しています。");
-            return;
+        };
+
+        if (broadcastChannelRef.current) {
+          try {
+            broadcastChannelRef.current.postMessage({
+              type: 'JOIN_REQ',
+              player: myPlayerData,
+              senderId: myUserId
+            });
+          } catch(e){}
+        }
+
+        if (typeof Peer !== 'undefined') {
+          try {
+            if (peerRef.current) peerRef.current.destroy();
+            const peer = new Peer();
+            peerRef.current = peer;
+            peer.on('open', () => {
+              const targetPeerId = 'jp-map-quiz-room-' + cleanCode;
+              const conn = peer.connect(targetPeerId);
+              guestConnRef.current = conn;
+              conn.on('open', () => {
+                setMultiNotice("");
+                conn.send({ type: 'JOIN', player: myPlayerData });
+              });
+              conn.on('data', (data) => {
+                if (data.type === 'ROOM_STATE') {
+                  setMultiRoom(data.room);
+                  setMultiNotice("");
+                } else if (data.type === 'ROOM_CLOSED') {
+                  setMultiRoom(null);
+                  setCurrentRoomId(null);
+                  setIsMultiMode(false);
+                  setMultiNotice("部屋が解散されました。");
+                  if (quizActive) setQuizActive(false);
+                }
+              });
+              conn.on('close', () => {
+                setMultiRoom(null);
+                setCurrentRoomId(null);
+                setIsMultiMode(false);
+                setMultiNotice("部屋から切断されました。");
+                if (quizActive) setQuizActive(false);
+              });
+            });
+          } catch (e) {
+            console.warn("PeerJS guest connection error:", e);
           }
-
-          const updatePayload = {};
-          updatePayload[`players.${user.uid}`] = {
-            id: user.uid,
-            nickname: name,
-            isHost: false,
-            score: 0,
-            correct: 0,
-            time: 0,
-            finished: false,
-            unlocked: {
-              isSpecialtiesUnlocked,
-              isCapitalUnlocked,
-              isCapitalInputUnlocked,
-              unlockedNationalCounts
-            }
-          };
-
-          await roomRef.update(updatePayload);
-          setCurrentRoomId(cleanCode);
-          setMultiNotice("");
-        } catch (e) {
-          console.error("Error joining room:", e);
-          setMultiNotice("部屋への参加に失敗しました。");
         }
       };
 
-      const leaveRoom = async () => {
-        if (!currentRoomId || !user || !firebaseAvailable) {
-          setCurrentRoomId(null);
-          setMultiRoom(null);
-          setIsMultiMode(false);
-          return;
-        }
-        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
-        try {
-          if (multiRoom && multiRoom.hostId === user.uid) {
-            await roomRef.delete();
-          } else {
-            const updatePayload = {};
-            updatePayload[`players.${user.uid}`] = firebase.firestore.FieldValue.delete();
-            await roomRef.update(updatePayload);
-
-            if (multiRoom && multiRoom.players) {
-              const remaining = Object.keys(multiRoom.players).filter(id => id !== user.uid);
-              if (remaining.length === 0) {
-                await roomRef.delete();
-              }
+      const leaveRoom = () => {
+        if (broadcastChannelRef.current) {
+          try {
+            if (multiRoom && multiRoom.hostId === myUserId) {
+              broadcastChannelRef.current.postMessage({ type: 'ROOM_CLOSED', senderId: myUserId });
+            } else {
+              broadcastChannelRef.current.postMessage({ type: 'LEAVE', userId: myUserId, senderId: myUserId });
             }
-          }
-        } catch (e) {
-          console.error("Error leaving room:", e);
-        } finally {
-          setCurrentRoomId(null);
-          setMultiRoom(null);
-          setIsMultiMode(false);
+            broadcastChannelRef.current.close();
+            broadcastChannelRef.current = null;
+          } catch(e){}
         }
+
+        if (multiRoom && multiRoom.hostId === myUserId) {
+          hostConnsRef.current.forEach(c => {
+            if (c && c.open) { try { c.send({ type: 'ROOM_CLOSED' }); } catch(e){} }
+            if (c) c.close();
+          });
+        } else if (guestConnRef.current && guestConnRef.current.open) {
+          try { guestConnRef.current.send({ type: 'LEAVE', userId: myUserId }); } catch(e){}
+          guestConnRef.current.close();
+        }
+
+        if (peerRef.current) {
+          try { peerRef.current.destroy(); } catch(e){}
+          peerRef.current = null;
+        }
+
+        setCurrentRoomId(null);
+        setMultiRoom(null);
+        setIsMultiMode(false);
       };
 
       useEffect(() => {
-        if (!currentRoomId || !firebaseAvailable || !user) return;
+        if (!multiRoom) return;
 
-        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
-        const unsubscribe = roomRef.onSnapshot((docSnap) => {
-          if (!docSnap.exists) {
-            setMultiRoom(null);
-            setCurrentRoomId(null);
-            setIsMultiMode(false);
-            setMultiNotice("部屋が解散されました。");
-            if (quizActive) {
-              setQuizActive(false);
-            }
-            return;
-          }
-          const data = docSnap.data();
-          setMultiRoom(data);
-
-          if (data.status === 'playing' && !quizActive && !quizFinished) {
-            setIsMultiMode(true);
-            setQuizChoiceMode(data.selectedQuizMode);
-            const isNational = data.selectedRegionKey === 'national';
-            const qCount = isNational ? (data.selectedNationalCount || 10) : (REGION_GROUPS[data.selectedRegionKey]?.prefs.length || 7);
-            
-            startQuiz("easy", isNational ? null : data.selectedRegionKey, qCount, data.questionQueue, false);
-          } else if (data.status === 'waiting' && quizFinished) {
-            setQuizFinished(false);
-            setQuizActive(false);
-          }
-        }, (err) => {
-          console.error("Room sync error:", err);
-        });
-
-        return () => unsubscribe();
-      }, [currentRoomId, user, quizActive, quizFinished]);
+        if (multiRoom.status === 'playing' && !quizActive && !quizFinished) {
+          setIsMultiMode(true);
+          setQuizChoiceMode(multiRoom.selectedQuizMode);
+          const isNational = multiRoom.selectedRegionKey === 'national';
+          const qCount = isNational ? (multiRoom.selectedNationalCount || 10) : (REGION_GROUPS[multiRoom.selectedRegionKey]?.prefs.length || 7);
+          
+          startQuiz("easy", isNational ? null : multiRoom.selectedRegionKey, qCount, multiRoom.questionQueue, false);
+        } else if (multiRoom.status === 'waiting' && quizFinished) {
+          setQuizFinished(false);
+          setQuizActive(false);
+        }
+      }, [multiRoom, quizActive, quizFinished]);
 
       useEffect(() => {
         const handleBeforeUnload = () => {
-          if (currentRoomId && user && firebaseAvailable) {
-            const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
-            if (multiRoom && multiRoom.hostId === user.uid) {
-              roomRef.delete();
-            } else {
-              const updatePayload = {};
-              updatePayload[`players.${user.uid}`] = firebase.firestore.FieldValue.delete();
-              roomRef.update(updatePayload);
-            }
-          }
+          leaveRoom();
         };
         window.addEventListener("beforeunload", handleBeforeUnload);
         return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-      }, [currentRoomId, user, multiRoom]);
+      }, [currentRoomId, multiRoom]);
 
       const isMultiSpecialtiesAvailable = useMemo(() => {
         if (!multiRoom || !multiRoom.players) return false;
@@ -1033,8 +1135,8 @@
         }
       };
 
-      const handleHostStartQuiz = async () => {
-        if (!currentRoomId || !multiRoom || !user) return;
+      const handleHostStartQuiz = () => {
+        if (!currentRoomId || !multiRoom || multiRoom.hostId !== myUserId) return;
         
         const isNational = selectedMultiRegionKey === 'national';
         let queue = [];
@@ -1046,7 +1148,6 @@
           queue = [...codes].sort(() => Math.random() - 0.5);
         }
 
-        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
         const updatedPlayers = { ...multiRoom.players };
         Object.keys(updatedPlayers).forEach(id => {
           updatedPlayers[id] = {
@@ -1058,28 +1159,23 @@
           };
         });
 
-        try {
-          await roomRef.update({
-            status: 'playing',
-            selectedQuizMode: selectedMultiQuizMode,
-            selectedRegionKey: selectedMultiRegionKey,
-            selectedNationalCount: selectedMultiNationalCount,
-            questionQueue: queue,
-            players: updatedPlayers
-          });
-        } catch (e) {
-          console.error("Error starting multi quiz:", e);
-        }
+        const updatedRoom = {
+          ...multiRoom,
+          status: 'playing',
+          selectedQuizMode: selectedMultiQuizMode,
+          selectedRegionKey: selectedMultiRegionKey,
+          selectedNationalCount: selectedMultiNationalCount,
+          questionQueue: queue,
+          players: updatedPlayers
+        };
+
+        broadcastRoomState(updatedRoom);
       };
 
-      const handleHostRestartRoom = async () => {
-        if (!currentRoomId || !user) return;
-        const roomRef = db.collection(`artifacts/${appId}/public/data/rooms`).doc(currentRoomId);
-        try {
-          await roomRef.update({ status: 'waiting' });
-        } catch (e) {
-          console.error("Error restarting room:", e);
-        }
+      const handleHostRestartRoom = () => {
+        if (!currentRoomId || !multiRoom || multiRoom.hostId !== myUserId) return;
+        const updatedRoom = { ...multiRoom, status: 'waiting' };
+        broadcastRoomState(updatedRoom);
       };
 
       const sortedMultiPlayers = useMemo(() => {
@@ -1094,47 +1190,9 @@
       }, [multiRoom]);
 
       const myMultiRank = useMemo(() => {
-        if (!user || !sortedMultiPlayers.length) return 0;
-        return sortedMultiPlayers.findIndex(p => p.id === user.uid) + 1;
-      }, [sortedMultiPlayers, user]);
-
-      useEffect(() => {
-        const initAuthAndSync = async () => {
-          let syncUser = user;
-          if (!syncUser) {
-            if (!firebaseAvailable) {
-              setLoading(false); return;
-            }
-            try {
-              if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) { await auth.signInWithCustomToken(__initial_auth_token); } 
-              else { await auth.signInAnonymously(); }
-              const unsubscribeAuth = auth.onAuthStateChanged((u) => { setUser(u); if (!u) setLoading(false); });
-              return () => unsubscribeAuth();
-            } catch (e) { console.error("Auth err:", e); setLoading(false); return; }
-          }
-
-          try {
-            const docRef = db.doc(`artifacts/${appId}/users/${syncUser.uid}/scores/stats`);
-            const unsubscribeSnapshot = docRef.onSnapshot((doc) => {
-              if (doc.exists) {
-                const data = doc.data();
-                if (data.totalScore) setTotalScore(prev => Math.max(prev, data.totalScore));
-                if (data.bestScore) setBestScore(prev => Math.max(prev, data.bestScore));
-                if (data.bestCorrect) setBestCorrect(prev => Math.max(prev, data.bestCorrect));
-                if (data.bestCombo) setBestCombo(prev => Math.max(prev, data.bestCombo));
-                if (data.bestTime) setBestTime(prev => Math.min(prev, data.bestTime));
-              }
-              setLoading(false);
-            }, (error) => {
-              setLoading(false);
-            });
-            return () => unsubscribeSnapshot();
-          } catch(e) {
-            setLoading(false);
-          }
-        };
-        initAuthAndSync();
-      }, [user]);
+        if (!sortedMultiPlayers.length) return 0;
+        return sortedMultiPlayers.findIndex(p => p.id === myUserId) + 1;
+      }, [sortedMultiPlayers, myUserId]);
 
       if (loading) {
         return (
@@ -1257,7 +1315,6 @@
                   </div>
                 )}
 
-                {}
                 <svg className="geolonia-svg-map w-full h-[320px] sm:h-[380px] transition-all duration-700 ease-in-out" viewBox={currentViewBox} xmlns="http://www.w3.org/2000/svg">
                   <g className="svg-map" transform="matrix(1.028807, 0, 0, 1.028807, -47.544239, -28.806583)">
                     <g className="prefectures" transform="matrix(1, 0, 0, 1, 6, 18)">
@@ -1266,7 +1323,7 @@
                         {renderPrefectureLabel(47)}
                       </g>
                       <g onClick={() => handlePrefectureClick("46")} className={`kagoshima prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 46 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("46")} stroke={selectedCode === 46 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 46 ? "3.5" : "1.5"} transform="translate(96, 17)" style={{ display: isPrefectureVisible("46") ? "block" : "none" }}>
-                        <polygon points="23 949 26 951 23 952"/><polygon points="33 960 32 954 39 950 48 956 47 961 41 965 35 964"/><polygon points="64 953 64 958 59 959 58 952 62 949 63 939 70 929 71 938"/><polygon points="38 844 43 848 52 844 57 850 56 852 61 859 66 864 65 869 70 871 73 880 80 881 80 888 78 891 75 890 70 896 75 899 73 903 76 902 69 905 66 910 50 918 50 913 55 910 59 898 53 889 54 884 48 881 53 879 54 883 57 884 61 878 54 872 50 874 44 887 46 898 51 901 49 906 43 907 40 901 27 901 28 897 25 896 27 894 22 890 31 890 35 880 32 871 27 867 30 860 28 848 31 846 35 848"/><polygon points="31 837 34 836 33 838"/><polygon points="27 848 24 842 29 840 30 844"/><polygon points="4 868 6 865 7 867 2 875 0 874"/><polygon points="12 864 9 861 14 861"/><polygon points="284 149 280 150 279 146 289 144"/><polygon points="301 126 301 118 306 118 305 122 309 126 308 129 303 132 300 128"/><polygon points="363 98 360 99 359 97 365 93"/><polygon points="344 90 331 98 335 101 330 104 327 103 329 107 323 102 325 99 316 97 324 97 325 95 321 94 335 88 337 90 339 86 344 85 342 89 344 87 345 89 347 82 349 88"/><polygon points="324 108 322 106 320 108 318 101 323 102 322 105 328 107 325 109 326 107"/><polygon points="355 12 352 16 352 13"/><polygon points="361 1 363 0 365 4"/>
+                        <polygon points="23 949 26 951 23 952"/><polygon points="33 960 32 954 39 950 48 956 47 961 41 965 35 964"/><polygon points="64 953 64 958 59 959 58 952 62 949 63 939 70 929 71 938"/><polygon points="38 844 43 848 52 844 57 850 56 852 61 859 66 864 65 869 70 871 73 880 80 888 78 891 75 890 70 896 75 899 73 903 76 902 69 905 66 910 50 918 50 913 55 910 59 898 53 889 54 884 48 881 53 879 54 883 57 884 61 878 54 872 50 874 44 887 46 898 51 901 49 906 43 907 40 901 27 901 28 897 25 896 27 894 22 890 31 890 35 880 32 871 27 867 30 860 28 848 31 846 35 848"/><polygon points="31 837 34 836 33 838"/><polygon points="27 848 24 842 29 840 30 844"/><polygon points="4 868 6 865 7 867 2 875 0 874"/><polygon points="12 864 9 861 14 861"/><polygon points="284 149 280 150 279 146 289 144"/><polygon points="301 126 301 118 306 118 305 122 309 126 308 129 303 132 300 128"/><polygon points="363 98 360 99 359 97 365 93"/><polygon points="344 90 331 98 335 101 330 104 327 103 329 107 323 102 325 99 316 97 324 97 325 95 321 94 335 88 337 90 339 86 344 85 342 89 344 87 345 89 347 82 349 88"/><polygon points="324 108 322 106 320 108 318 101 323 102 322 105 328 107 325 109 326 107"/><polygon points="355 12 352 16 352 13"/><polygon points="361 1 363 0 365 4"/>
                         {renderPrefectureLabel(46)}
                       </g>
                       <g onClick={() => handlePrefectureClick("45")} className={`miyazaki prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 45 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("45")} stroke={selectedCode === 45 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 45 ? "3.5" : "1.5"} transform="translate(152, 824)" style={{ display: isPrefectureVisible("45") ? "block" : "none" }}>
@@ -1438,7 +1495,7 @@
                         {renderPrefectureLabel(4)}
                       </g>
                       <g onClick={() => handlePrefectureClick("3")} className={`iwate prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 3 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("3")} stroke={selectedCode === 3 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 3 ? "3.5" : "1.5"} transform="translate(664, 354)" style={{ display: isPrefectureVisible("3") ? "block" : "none" }}>
-                        <polygon points="48 92 41 91 39 105 33 102 29 107 23 103 25 99 17 100 7 95 8 89 5 84 8 81 0 68 3 57 7 51 5 46 8 42 5 38 10 37 8 19 12 14 16 15 29 5 31 8 35 5 40 7 46 0 54 11 52 16 57 19 55 23 61 28 64 43 62 53 65 49 66 54 68 55 62 60 64 62 67 59 67 63 63 63 68 60 69 65 68 60 71 62 73 60 75 64 74 58 81 62 83 57 83 60 86 57 86 59 88 53 89 52 86 54 91 52 91 52 94 50 90"/>
+                        <path d="M48,92 L41,91 L39,105 L33,102 L29,107 L23,103 L25,99 L17,100 L7,95 L8,89 L5,84 L8,81 L0,68 L3,57 L7,51 L5,46 L8,42 L5,38 L10,37 L8,19 L12,14 L16,15 L29,5 L31,8 L35,5 L40,7 L46,0 L54,11 L52,16 L57,19 L55,23 L61,28 L64,43 L62,53 L65,49 L66,54 L68,55 L62,60 L64,62 L67,59 L67,63 L63,63 L68,60 L69,65 L68,60 L71,62 L73,60 L75,64 L74,58 L81,62 L83,57 L83,60 L86,57 L86,59 L88,53 L89,52 L86,54 L91,52 L94,50 Z"/>
                         {renderPrefectureLabel(3)}
                       </g>
                       <g onClick={() => handlePrefectureClick("2")} className={`aomori prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 2 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("2")} fillRule="nonzero" stroke={selectedCode === 2 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 2 ? "3.5" : "1.5"} transform="translate(624, 287)" style={{ display: isPrefectureVisible("2") ? "block" : "none" }}>
@@ -1457,7 +1514,6 @@
                   </g>
                 </svg>
 
-                {}
                 {quizActive && !quizFinished && (quizMode === "choices" || quizMode === "specialties" || quizMode === "capital") && (
                   <div className="w-full mt-2 bg-slate-50 border border-slate-200 p-2.5 rounded-2xl z-10 animate-fade-in">
                     <p className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 text-center tracking-wider"><ruby>選択肢<rt>せんたくし</rt></ruby>から選んでね！</p>
@@ -1517,7 +1573,6 @@
                   </div>
                 )}
 
-                {}
                 {!quizActive && !quizFinished && (
                   <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-4 text-center z-20 backdrop-blur-xs">
                     <div className="bg-white border border-slate-200 p-6 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in max-h-[92vh] overflow-y-auto my-auto">
@@ -1712,7 +1767,6 @@
                   </div>
                 )}
 
-                {}
                 {!quizActive && !quizFinished && showMultiplayer && (
                   <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center p-4 text-center z-30 backdrop-blur-xs">
                     <div className="bg-white border border-slate-200 p-5 sm:p-6 rounded-[2rem] max-w-xl w-full shadow-2xl animate-fade-in max-h-[92vh] overflow-y-auto flex flex-col justify-between">
@@ -1822,13 +1876,13 @@
                                 <div key={p.id} className="flex items-center gap-1.5 bg-white px-2.5 py-1.5 rounded-xl border border-slate-100 text-xs font-bold text-slate-800 truncate">
                                   <span>{p.isHost ? "👑" : "👤"}</span>
                                   <span className="truncate">{p.nickname}</span>
-                                  {p.id === user?.uid && <span className="text-[9px] text-rose-500 font-bold ml-auto">(自分)</span>}
+                                  {p.id === myUserId && <span className="text-[9px] text-rose-500 font-bold ml-auto">(自分)</span>}
                                 </div>
                               ))}
                             </div>
                           </div>
 
-                          {multiRoom && multiRoom.hostId === user?.uid ? (
+                          {multiRoom && multiRoom.hostId === myUserId ? (
                             <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl mb-4 text-left">
                               <h4 className="text-xs font-extrabold text-slate-600 mb-2 flex justify-between items-center">
                                 <span>⚙️ <ruby>対戦コース選択<rt>たいせんこーすせんたく</rt></ruby>（オーナー）</span>
@@ -1948,7 +2002,6 @@
               </section>
             )}
 
-            {}
             <aside className={quizFinished ? "lg:col-span-12 max-w-2xl mx-auto w-full" : "lg:col-span-5 flex flex-col gap-4 w-full"}>
               
               {quizActive && !quizFinished && (
@@ -1988,7 +2041,6 @@
                 </div>
               )}
 
-              {}
               {quizFinished && (
                 <div className={`${isPractice ? "bg-amber-50 border-amber-200" : "bg-white border-slate-200"} border rounded-[2rem] p-6 shadow-md flex flex-col gap-4 animate-fade-in max-w-2xl mx-auto w-full`}>
                   
@@ -2029,7 +2081,7 @@
                                   <span className="flex items-center gap-1.5 truncate">
                                     <span>{idx === 0 ? "🥇" : idx === 1 ? "🥈" : "🥉"}</span>
                                     <span className="truncate">{p.nickname}</span>
-                                    {p.id === user?.uid && <span className="text-[9px] text-rose-500 font-bold">(自分)</span>}
+                                    {p.id === myUserId && <span className="text-[9px] text-rose-500 font-bold">(自分)</span>}
                                   </span>
                                   <span className="text-indigo-700 font-extrabold">{p.correct || 0}問正解 ({p.score || 0}pt)</span>
                                 </div>
@@ -2039,7 +2091,7 @@
                         </div>
                       )}
 
-                      {multiRoom.hostId === user?.uid ? (
+                      {multiRoom.hostId === myUserId ? (
                         <button 
                           onClick={handleHostRestartRoom} 
                           className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3 px-4 rounded-xl transition-all shadow-md text-sm text-center animate-pulse"
