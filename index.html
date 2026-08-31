@@ -51,6 +51,48 @@
     .pref-label-blink {
       animation: prefLabelBlink 4s infinite;
     }
+
+    /* ロックツールチップ */
+    .lock-tooltip-container {
+      position: relative;
+      display: inline-block;
+      width: 100%;
+    }
+    .lock-tooltip {
+      visibility: hidden;
+      opacity: 0;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%) translateY(4px);
+      background-color: rgba(15, 23, 42, 0.94);
+      color: #ffffff;
+      text-align: center;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-size: 0.75rem;
+      font-weight: bold;
+      white-space: nowrap;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s;
+    }
+    .lock-tooltip::after {
+      content: "";
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      margin-left: -5px;
+      border-width: 5px;
+      border-style: solid;
+      border-color: rgba(15, 23, 42, 0.94) transparent transparent transparent;
+    }
+    .lock-tooltip-container:hover .lock-tooltip {
+      visibility: visible;
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
   </style>
 </head>
 <body class="bg-slate-50 text-slate-800 min-h-screen flex flex-col">
@@ -58,6 +100,69 @@
 
   <script type="text/babel">
     const { useState, useEffect, useMemo, useRef } = React;
+
+    // 効果音再生用（Web Audio API）
+    const playQuizSound = (isCorrect) => {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        const ctx = new AudioCtx();
+        if (ctx.state === 'suspended') {
+          ctx.resume();
+        }
+        const now = ctx.currentTime;
+
+        if (isCorrect) {
+          // ピンポン（正解音）
+          const osc1 = ctx.createOscillator();
+          const gain1 = ctx.createGain();
+          osc1.type = 'sine';
+          osc1.frequency.setValueAtTime(659.25, now); // ミ (E5)
+          gain1.gain.setValueAtTime(0.3, now);
+          gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+          osc1.connect(gain1);
+          gain1.connect(ctx.destination);
+          osc1.start(now);
+          osc1.stop(now + 0.15);
+
+          const osc2 = ctx.createOscillator();
+          const gain2 = ctx.createGain();
+          osc2.type = 'sine';
+          osc2.frequency.setValueAtTime(880, now + 0.15); // ラ (A5)
+          gain2.gain.setValueAtTime(0.35, now + 0.15);
+          gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.6);
+          osc2.connect(gain2);
+          gain2.connect(ctx.destination);
+          osc2.start(now + 0.15);
+          osc2.stop(now + 0.6);
+        } else {
+          // ブブー（不正解音）
+          const osc1 = ctx.createOscillator();
+          const gain1 = ctx.createGain();
+          osc1.type = 'sawtooth';
+          osc1.frequency.setValueAtTime(150, now);
+          gain1.gain.setValueAtTime(0.3, now);
+          gain1.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+          osc1.connect(gain1);
+          gain1.connect(ctx.destination);
+          osc1.start(now);
+          osc1.stop(now + 0.2);
+
+          const osc2 = ctx.createOscillator();
+          const gain2 = ctx.createGain();
+          osc2.type = 'sawtooth';
+          osc2.frequency.setValueAtTime(140, now + 0.25);
+          gain2.gain.setValueAtTime(0.3, now + 0.25);
+          gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+          osc2.connect(gain2);
+          gain2.connect(ctx.destination);
+          osc2.start(now + 0.25);
+          osc2.stop(now + 0.55);
+        }
+      } catch (e) {
+        console.warn("効果音再生エラー:", e);
+      }
+    };
 
     const generate8CharCode = () => {
       const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -514,11 +619,99 @@
         setUserInputValue("");
       };
 
+      const updateUserGroupStats = async (gainedScore, courseName) => {
+        const currentUid = authUser?.uid || auth?.currentUser?.uid || myUserId;
+        const name = multiNickname.trim() || "プレイヤー";
+        const dateStr = new Date().toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+        myGroupCodes.forEach(async (code) => {
+          let updatedViaFirebase = false;
+          if (firebaseAvailable && db && currentUid) {
+            try {
+              const groupRef = db.doc(`artifacts/${appId}/public/data/groups/${code}`);
+              const updatePayload = {};
+              updatePayload[`members.${currentUid}.id`] = currentUid;
+              updatePayload[`members.${currentUid}.nickname`] = name;
+              updatePayload[`members.${currentUid}.lastScore`] = gainedScore;
+              updatePayload[`members.${currentUid}.lastPlayedAt`] = dateStr;
+              updatePayload[`members.${currentUid}.lastCourse`] = courseName || "通常クイズ";
+              updatePayload[`members.${currentUid}.bestScore`] = Math.max(bestScore, gainedScore);
+              updatePayload[`members.${currentUid}.totalScore`] = totalScore + gainedScore;
+              await groupRef.update(updatePayload);
+              updatedViaFirebase = true;
+            } catch (e) {
+              console.warn("Firestore group update skipped due to permissions, using local fallback:", e);
+            }
+          }
+          if (!updatedViaFirebase) {
+            setAllGroupsData(prev => {
+              const existing = prev[code] || { code, ownerUid: "", ownerName: "", members: {}, settings: { showRanking: false, showLastPlay: false, showScores: false } };
+              const currentMember = existing.members?.[currentUid] || {};
+              const updatedMember = {
+                ...currentMember,
+                id: currentUid,
+                nickname: name,
+                lastScore: gainedScore,
+                lastPlayedAt: dateStr,
+                lastCourse: courseName || "通常クイズ",
+                bestScore: Math.max(bestScore || 0, gainedScore),
+                totalScore: (totalScore || 0) + gainedScore
+              };
+              const nextAll = {
+                ...prev,
+                [code]: {
+                  ...existing,
+                  members: { ...existing.members, [currentUid]: updatedMember }
+                }
+              };
+              safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(nextAll));
+              return nextAll;
+            });
+          }
+        });
+      };
+
+      const handleToggleGroupSetting = async (code, settingKey) => {
+        const currentGroup = allGroupsData[code];
+        if (!currentGroup) return;
+        const currentSettings = currentGroup.settings || { showRanking: false, showLastPlay: false, showScores: false };
+        const newSettingValue = !(currentSettings[settingKey] ?? false);
+
+        const currentUid = authUser?.uid || auth?.currentUser?.uid || myUserId;
+        let updatedViaFirebase = false;
+
+        if (firebaseAvailable && db && currentUid) {
+          try {
+            const groupRef = db.doc(`artifacts/${appId}/public/data/groups/${code}`);
+            await groupRef.update({ [`settings.${settingKey}`]: newSettingValue });
+            updatedViaFirebase = true;
+          } catch (e) {
+            console.warn("Firestore group settings update fallback:", e);
+          }
+        }
+        if (!updatedViaFirebase) {
+          setAllGroupsData(prev => {
+            const nextAll = {
+              ...prev,
+              [code]: {
+                ...prev[code],
+                settings: {
+                  ...(prev[code]?.settings || { showRanking: false, showLastPlay: false, showScores: false }),
+                  [settingKey]: newSettingValue
+                }
+              }
+            };
+            safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(nextAll));
+            return nextAll;
+          });
+        }
+      };
+
       const endQuiz = (isFinished = false) => {
         setQuizActive(false);
         setUserInputValue("");
         setQuizRecommendedActive(false);
-        setQuizFeedback(null); // ゲーム終了時にポップアップ・ダイアログを確実に消去
+        setQuizFeedback(null);
 
         if (isFinished) {
           setQuizFinished(true);
@@ -532,34 +725,12 @@
             return newTotalScore;
           });
 
-          // マルチプレイヤー通信：自分の最終スコア＆終了フラグを同期
-          if (isMultiMode && currentRoomId) {
-            if (multiRoom && multiRoom.hostId === myUserId) {
-              const current = multiRoomRef.current || multiRoom;
-              if (current && current.players[myUserId]) {
-                const updatedPlayers = {
-                  ...current.players,
-                  [myUserId]: {
-                    ...current.players[myUserId],
-                    score: gainedScore,
-                    correct: correctAnswersRef.current,
-                    time: duration,
-                    finished: true
-                  }
-                };
-                const updatedRoom = { ...current, players: updatedPlayers };
-                broadcastRoomState(updatedRoom);
-              }
-            } else if (guestConnRef.current && guestConnRef.current.open) {
-              guestConnRef.current.send({
-                type: 'UPDATE_SCORE',
-                userId: myUserId,
-                score: gainedScore,
-                correct: correctAnswersRef.current,
-                time: duration
-              });
-            }
-          }
+          const courseName = isPractice ? "練習モード"
+            : quizRecommendedActive ? "おすすめモード"
+            : selectedRegionKey && REGION_GROUPS[selectedRegionKey] ? `${REGION_GROUPS[selectedRegionKey].name}地方`
+            : `全国${maxQuestions}問`;
+
+          updateUserGroupStats(gainedScore, courseName);
 
           let isNewScore = false; 
           let updatedBestScore = bestScore; 
@@ -650,7 +821,6 @@
         setShowPracticeSelect(false);
         setShowNationalSelect(false);
         setQuizFinished(false);
-        setQuizFeedback(null); // クイズ開始時にもフィードバックをクリア
 
         let queue = [];
         if (customQueue && Array.isArray(customQueue) && customQueue.length > 0) {
@@ -676,6 +846,7 @@
         setMaxCombo(0);
         setCorrectAnswers(0);
         correctAnswersRef.current = 0;
+        setQuizFeedback(null);
         setTimeLeft(30);
         setUserInputValue("");
         quizStartTimeRef.current = Date.now();
@@ -688,9 +859,12 @@
         const isCorrect = parseInt(selectedPrefCode, 10) === parseInt(currentTarget.code, 10);
         updatePrefStats(currentTarget.code, isCorrect);
 
+        // 効果音を再生
+        playQuizSound(isCorrect);
+
         if (isCorrect) {
           const newCombo = combo + 1;
-          const pointsGained = isPractice ? 10 : (10 + (newCombo > 1 ? (newCombo - 1) * 5 : 0));
+          const pointsGained = isPractice ? 10 : 10 + (newCombo > 1 ? (newCombo - 1) * 5 : 0);
           const newScore = score + pointsGained;
           const newCorrect = correctAnswers + 1;
 
@@ -783,8 +957,8 @@
         const otherList = [];
 
         allCodes.forEach(code => {
-          const stat = prefStats[code];
-          if (!stat || stat.asked === 0) {
+          const stat = prefStats[code] || { asked: 0, correct: 0 };
+          if (stat.asked === 0) {
             unattemptedList.push(code);
           } else {
             const accuracy = stat.correct / stat.asked;
@@ -800,8 +974,8 @@
         unattemptedList.sort(() => Math.random() - 0.5);
         otherList.sort(() => Math.random() - 0.5);
 
-        const recommendedQueue = [...lowAccuracyList, ...unattemptedList, ...otherList].slice(0, 10);
-        startQuiz("easy", null, 10, recommendedQueue, false);
+        const targetQueue = [...lowAccuracyList, ...unattemptedList, ...otherList].slice(0, 10);
+        startQuiz("easy", null, 10, targetQueue, false);
       };
 
       useEffect(() => {
@@ -833,512 +1007,244 @@
         }
       }, [quizActive, quizMode, currentTarget, quizFeedback]);
 
-      const broadcastRoomState = (newRoom) => {
-        setMultiRoom(newRoom);
-        multiRoomRef.current = newRoom;
-        hostConnsRef.current.forEach(c => {
-          if (c && c.open) {
-            c.send({ type: 'ROOM_STATE', room: newRoom });
-          }
-        });
-      };
-
-      const handleHostReceiveData = (conn, data) => {
-        const current = multiRoomRef.current;
-        if (!current) return;
-
-        if (data.type === 'JOIN') {
-          const updatedPlayers = {
-            ...current.players,
-            [data.player.id]: data.player
-          };
-          conn.guestUserId = data.player.id;
-          const updatedRoom = { ...current, players: updatedPlayers };
-          broadcastRoomState(updatedRoom);
-        } else if (data.type === 'UPDATE_SCORE') {
-          if (!current.players[data.userId]) return;
-          const updatedPlayers = {
-            ...current.players,
-            [data.userId]: {
-              ...current.players[data.userId],
-              score: data.score,
-              correct: data.correct,
-              time: data.time,
-              finished: true
-            }
-          };
-          const updatedRoom = { ...current, players: updatedPlayers };
-          broadcastRoomState(updatedRoom);
-        } else if (data.type === 'LEAVE') {
-          if (data.userId && current.players[data.userId]) {
-            const updatedPlayers = { ...current.players };
-            delete updatedPlayers[data.userId];
-            
-            const remainingNonHostCount = Object.values(updatedPlayers).filter(p => !p.isHost).length;
-            if (remainingNonHostCount === 0 && Object.keys(updatedPlayers).length <= 1) {
-              hostConnsRef.current.forEach(c => { if (c && c.open) c.send({ type: 'ROOM_CLOSED' }); });
-              setMultiRoom(null);
-              setCurrentRoomId(null);
-              setIsMultiMode(false);
-              return;
-            }
-            const updatedRoom = { ...current, players: updatedPlayers };
-            broadcastRoomState(updatedRoom);
-          }
-        }
-      };
-
-      const handleHostGuestDisconnect = (conn) => {
-        if (conn.guestUserId && multiRoomRef.current) {
-          const current = multiRoomRef.current;
-          const updatedPlayers = { ...current.players };
-          delete updatedPlayers[conn.guestUserId];
-          const updatedRoom = { ...current, players: updatedPlayers };
-          broadcastRoomState(updatedRoom);
-        }
-        hostConnsRef.current = hostConnsRef.current.filter(c => c !== conn);
-      };
-
-      const createRoom = () => {
-        if (typeof Peer === 'undefined') {
-          setMultiNotice("通信機能が利用できません。インターネット接続を確認してください。");
-          return;
-        }
-        const name = multiNickname.trim() || "プレイヤー";
-        safeSetLocalStorage("japan_map_quiz_nickname", name);
-        const code = generate8CharCode();
-        const fullPeerId = 'jp-map-quiz-room-' + code;
-
-        if (peerRef.current) peerRef.current.destroy();
-
-        const peer = new Peer(fullPeerId);
-        peerRef.current = peer;
-
-        peer.on('open', () => {
-          setCurrentRoomId(code);
-          setMultiNotice("");
-          const initialRoom = {
-            roomId: code,
-            hostId: myUserId,
-            hostName: name,
-            status: 'waiting',
-            selectedQuizMode: 'touch',
-            selectedRegionKey: 'hokkaido_tohoku',
-            selectedNationalCount: 10,
-            questionQueue: [],
-            players: {
-              [myUserId]: {
-                id: myUserId,
-                nickname: name,
-                isHost: true,
-                score: 0,
-                correct: 0,
-                time: 0,
-                finished: false,
-                unlocked: {
-                  isSpecialtiesUnlocked,
-                  isCapitalUnlocked,
-                  isCapitalInputUnlocked,
-                  unlockedNationalCounts
-                }
-              }
-            }
-          };
-          setMultiRoom(initialRoom);
-          multiRoomRef.current = initialRoom;
-          hostConnsRef.current = [];
-        });
-
-        peer.on('connection', (conn) => {
-          hostConnsRef.current.push(conn);
-
-          conn.on('data', (data) => {
-            handleHostReceiveData(conn, data);
-          });
-
-          conn.on('close', () => {
-            handleHostGuestDisconnect(conn);
-          });
-
-          conn.on('error', () => {
-            handleHostGuestDisconnect(conn);
-          });
-        });
-
-        peer.on('error', (err) => {
-          console.error("Peer error:", err);
-          setMultiNotice("部屋の作成に失敗しました。もう一度お試しください。");
-        });
-      };
-
-      const joinRoom = (codeToJoin) => {
-        if (typeof Peer === 'undefined') {
-          setMultiNotice("通信機能が利用できません。");
-          return;
-        }
-        const cleanCode = codeToJoin.trim().toLowerCase();
-        if (!cleanCode) {
-          setMultiNotice("部屋コードを入力してください。");
-          return;
-        }
-        const name = multiNickname.trim() || "プレイヤー";
-        safeSetLocalStorage("japan_map_quiz_nickname", name);
-
-        if (peerRef.current) peerRef.current.destroy();
-
-        const peer = new Peer();
-        peerRef.current = peer;
-
-        peer.on('open', () => {
-          const targetPeerId = 'jp-map-quiz-room-' + cleanCode;
-          const conn = peer.connect(targetPeerId);
-          guestConnRef.current = conn;
-
-          conn.on('open', () => {
-            setCurrentRoomId(cleanCode);
-            setMultiNotice("");
-            conn.send({
-              type: 'JOIN',
-              player: {
-                id: myUserId,
-                nickname: name,
-                isHost: false,
-                score: 0,
-                correct: 0,
-                time: 0,
-                finished: false,
-                unlocked: {
-                  isSpecialtiesUnlocked,
-                  isCapitalUnlocked,
-                  isCapitalInputUnlocked,
-                  unlockedNationalCounts
-                }
-              }
-            });
-          });
-
-          conn.on('data', (data) => {
-            if (data.type === 'ROOM_STATE') {
-              setMultiRoom(data.room);
-            } else if (data.type === 'ROOM_CLOSED') {
-              setMultiRoom(null);
-              setCurrentRoomId(null);
-              setIsMultiMode(false);
-              setMultiNotice("部屋が解散されました。");
-              if (quizActive) setQuizActive(false);
-            }
-          });
-
-          conn.on('close', () => {
-            setMultiRoom(null);
-            setCurrentRoomId(null);
-            setIsMultiMode(false);
-            setMultiNotice("部屋から切断されました。");
-            if (quizActive) setQuizActive(false);
-          });
-
-          conn.on('error', () => {
-            setMultiNotice("部屋への接続に失敗しました。コードを確認してください。");
-          });
-        });
-
-        peer.on('error', () => {
-          setMultiNotice("部屋が見つかりません。コードを確認してください。");
-        });
-      };
-
-      const leaveRoom = () => {
-        if (multiRoom && multiRoom.hostId === myUserId) {
-          hostConnsRef.current.forEach(c => {
-            if (c && c.open) c.send({ type: 'ROOM_CLOSED' });
-            if (c) c.close();
-          });
-        } else if (guestConnRef.current && guestConnRef.current.open) {
-          guestConnRef.current.send({ type: 'LEAVE', userId: myUserId });
-          guestConnRef.current.close();
-        }
-
-        if (peerRef.current) {
-          peerRef.current.destroy();
-          peerRef.current = null;
-        }
-
-        setCurrentRoomId(null);
-        setMultiRoom(null);
-        setIsMultiMode(false);
-      };
-
-      useEffect(() => {
-        if (!multiRoom) return;
-
-        if (multiRoom.status === 'playing' && !quizActive && !quizFinished) {
-          setIsMultiMode(true);
-          setQuizChoiceMode(multiRoom.selectedQuizMode);
-          const isNational = multiRoom.selectedRegionKey === 'national';
-          const qCount = isNational ? (multiRoom.selectedNationalCount || 10) : (REGION_GROUPS[multiRoom.selectedRegionKey]?.prefs.length || 7);
-          
-          startQuiz("easy", isNational ? null : multiRoom.selectedRegionKey, qCount, multiRoom.questionQueue, false);
-        } else if (multiRoom.status === 'waiting' && quizFinished) {
-          setQuizFinished(false);
-          setQuizActive(false);
-        }
-      }, [multiRoom, quizActive, quizFinished]);
-
-      useEffect(() => {
-        const handleBeforeUnload = () => {
-          leaveRoom();
-        };
-        window.addEventListener("beforeunload", handleBeforeUnload);
-        return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-      }, [currentRoomId, multiRoom]);
-
-      const sortedMultiPlayers = useMemo(() => {
-        if (!multiRoom || !multiRoom.players) return [];
-        const players = Object.values(multiRoom.players);
-        players.sort((a, b) => {
-          // 第1優先：正解数（より多い方が上位）
-          if ((b.correct || 0) !== (a.correct || 0)) return (b.correct || 0) - (a.correct || 0);
-          // 第2優先：クリアタイム（より早い/少ない方が上位）
-          if ((a.time || 999999) !== (b.time || 999999)) return (a.time || 999999) - (b.time || 999999);
-          // 第3優先：獲得スコア（より多い方が上位）
-          return (b.score || 0) - (a.score || 0);
-        });
-        return players;
-      }, [multiRoom]);
-
-      const myMultiRank = useMemo(() => {
-        if (!sortedMultiPlayers.length) return 0;
-        return sortedMultiPlayers.findIndex(p => p.id === myUserId) + 1;
-      }, [sortedMultiPlayers, myUserId]);
-
-      // 対戦に参加している全プレイヤーが終了したかの判定
-      const allMultiPlayersFinished = useMemo(() => {
-        if (!multiRoom || !multiRoom.players) return false;
-        const players = Object.values(multiRoom.players);
-        if (players.length === 0) return false;
-        return players.every(p => p.finished);
-      }, [multiRoom]);
-
-      const handleHostRestartRoom = () => {
-        if (!multiRoom || multiRoom.hostId !== myUserId) return;
-        const isNational = multiRoom.selectedRegionKey === 'national';
-        const qCount = isNational ? (multiRoom.selectedNationalCount || 10) : (REGION_GROUPS[multiRoom.selectedRegionKey]?.prefs.length || 7);
-        
-        let queue = [];
-        if (multiRoom.selectedRegionKey && REGION_GROUPS[multiRoom.selectedRegionKey]) {
-          queue = [...REGION_GROUPS[multiRoom.selectedRegionKey].prefs].sort(() => Math.random() - 0.5);
-        } else {
-          queue = Object.keys(PREFECTURE_DATA).map(Number).sort(() => Math.random() - 0.5).slice(0, qCount);
-        }
-
-        const resetPlayers = {};
-        Object.keys(multiRoom.players || {}).forEach(pId => {
-          resetPlayers[pId] = {
-            ...multiRoom.players[pId],
-            score: 0,
-            correct: 0,
-            time: 0,
-            finished: false
-          };
-        });
-
-        const newRoomState = {
-          ...multiRoom,
-          status: 'playing',
-          questionQueue: queue,
-          players: resetPlayers
-        };
-
-        broadcastRoomState(newRoomState);
-      };
-
-      const handleHostStartGame = () => {
-        if (!multiRoom || multiRoom.hostId !== myUserId) return;
-        const isNational = selectedMultiRegionKey === 'national';
-        const qCount = isNational ? selectedMultiNationalCount : (REGION_GROUPS[selectedMultiRegionKey]?.prefs.length || 7);
-        
-        let queue = [];
-        if (!isNational && REGION_GROUPS[selectedMultiRegionKey]) {
-          queue = [...REGION_GROUPS[selectedMultiRegionKey].prefs].sort(() => Math.random() - 0.5);
-        } else {
-          queue = Object.keys(PREFECTURE_DATA).map(Number).sort(() => Math.random() - 0.5).slice(0, qCount);
-        }
-
-        const resetPlayers = {};
-        Object.keys(multiRoom.players || {}).forEach(pId => {
-          resetPlayers[pId] = {
-            ...multiRoom.players[pId],
-            score: 0,
-            correct: 0,
-            time: 0,
-            finished: false
-          };
-        });
-
-        const newRoomState = {
-          ...multiRoom,
-          status: 'playing',
-          selectedQuizMode: selectedMultiQuizMode,
-          selectedRegionKey: selectedMultiRegionKey,
-          selectedNationalCount: selectedMultiNationalCount,
-          questionQueue: queue,
-          players: resetPlayers
-        };
-
-        broadcastRoomState(newRoomState);
-      };
-
-      const handleCreateNewGroup = () => {
+      const handleCreateNewGroup = async () => {
         const code = createdCodePreview || generate8CharCode();
-        if (myGroupCodes.includes(code)) {
-          setGroupNoticeMsg("そのグループは既に作成済みです。");
-          return;
-        }
+        const name = multiNickname.trim() || "プレイヤー";
+        safeSetLocalStorage("japan_map_quiz_nickname", name);
 
         const currentUid = authUser?.uid || auth?.currentUser?.uid || myUserId;
-        const nick = multiNickname || "プレイヤー";
+        const dateStr = new Date().toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-        const newGroup = {
+        const newGroupObj = {
           code: code,
           ownerUid: currentUid,
-          ownerName: nick,
-          createdAt: new Date().toISOString(),
-          settings: {
-            showRanking: true,
-            showLastPlay: true,
-            showScores: true
-          },
+          ownerName: name,
+          createdAt: Date.now(),
+          settings: { showRanking: false, showLastPlay: false, showScores: false },
           members: {
-            [currentUid]: {
-              id: currentUid,
-              nickname: nick,
-              isOwner: true,
-              bestScore: bestScore,
+            [currentUid]: { 
+              id: currentUid, 
+              nickname: name, 
+              isOwner: true, 
+              joinedAt: Date.now(),
               totalScore: totalScore,
+              bestScore: bestScore,
               lastScore: 0,
-              lastCourse: "ー",
-              lastPlayedAt: new Date().toLocaleDateString('ja-JP')
+              lastPlayedAt: dateStr,
+              lastCourse: "未プレイ"
             }
           }
         };
 
-        const updatedCodes = [...myGroupCodes, code];
-        const updatedAllGroups = { ...allGroupsData, [code]: newGroup };
-
-        setMyGroupCodes(updatedCodes);
-        setAllGroupsData(updatedAllGroups);
-        safeSetLocalStorage("japan_map_quiz_my_groups", JSON.stringify(updatedCodes));
-        safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(updatedAllGroups));
-
-        if (firebaseAvailable && db) {
+        if (firebaseAvailable && db && currentUid) {
           try {
-            db.collection(appId + "_groups").doc(code).set(newGroup);
-          } catch(e) { console.warn("Firestore save group error", e); }
+            const groupRef = db.doc(`artifacts/${appId}/public/data/groups/${code}`);
+            const myGroupsRef = db.doc(`artifacts/${appId}/users/${currentUid}/groups/my_groups`);
+
+            const newGroupPayload = {
+              code: code,
+              ownerUid: currentUid,
+              ownerName: name,
+              createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+              settings: {
+                showRanking: false,
+                showLastPlay: false,
+                showScores: false
+              },
+              members: {
+                [currentUid]: {
+                  id: currentUid,
+                  nickname: name,
+                  isOwner: true,
+                  joinedAt: Date.now(),
+                  totalScore: totalScore,
+                  bestScore: bestScore,
+                  lastScore: 0,
+                  lastPlayedAt: dateStr,
+                  lastCourse: "未プレイ"
+                }
+              }
+            };
+
+            await groupRef.set(newGroupPayload, { merge: true });
+
+            const myDoc = await myGroupsRef.get().catch(() => null);
+            let currentCodes = [];
+            if (myDoc && myDoc.exists && myDoc.data().groupCodes) {
+              currentCodes = myDoc.data().groupCodes;
+            }
+            if (!currentCodes.includes(code)) {
+              currentCodes.push(code);
+            }
+            await myGroupsRef.set({ groupCodes: currentCodes }, { merge: true }).catch(() => {});
+          } catch (e) {
+            console.warn("Firestore permission error on create, using local fallback mode:", e);
+          }
         }
 
+        setAllGroupsData(prev => {
+          const nextAll = { ...prev, [code]: newGroupObj };
+          safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(nextAll));
+          return nextAll;
+        });
+
+        const nextMy = Array.from(new Set([...myGroupCodes, code]));
+        setMyGroupCodes(nextMy);
+        safeSetLocalStorage("japan_map_quiz_my_groups", JSON.stringify(nextMy));
+
+        setGroupNoticeMsg(`グループ (${code}) を作成し、所属しました！`);
         setCreatedGroupCodePreview(generate8CharCode());
-        setGroupNoticeMsg(`グループ「${code}」を作成しました！`);
       };
 
-      const handleJoinGroupSubmit = (inputCode) => {
-        const codeToJoin = (inputCode || joinGroupCodeInput || "").trim().toLowerCase();
-        if (!codeToJoin) {
+      const handleJoinGroupSubmit = async (targetCode) => {
+        const cleanCode = (targetCode || joinGroupCodeInput).trim().toLowerCase();
+        if (!cleanCode) {
           setGroupNoticeMsg("グループコードを入力してください。");
           return;
         }
-        if (myGroupCodes.includes(codeToJoin)) {
-          setGroupNoticeMsg("すでに参加しているグループです。");
-          return;
-        }
+        const name = multiNickname.trim() || "プレイヤー";
+        safeSetLocalStorage("japan_map_quiz_nickname", name);
 
         const currentUid = authUser?.uid || auth?.currentUser?.uid || myUserId;
-        const nick = multiNickname || "プレイヤー";
+        const dateStr = new Date().toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
-        let existingGroup = allGroupsData[codeToJoin];
-        if (!existingGroup) {
-          existingGroup = {
-            code: codeToJoin,
-            ownerUid: "unknown",
-            ownerName: "グループオーナー",
-            settings: { showRanking: true, showLastPlay: true, showScores: true },
-            members: {}
-          };
+        if (firebaseAvailable && db && currentUid) {
+          try {
+            const groupRef = db.doc(`artifacts/${appId}/public/data/groups/${cleanCode}`);
+            const myGroupsRef = db.doc(`artifacts/${appId}/users/${currentUid}/groups/my_groups`);
+
+            const docSnap = await groupRef.get().catch(() => null);
+            if (docSnap && docSnap.exists) {
+              const updateObj = {};
+              updateObj[`members.${currentUid}`] = {
+                id: currentUid,
+                nickname: name,
+                isOwner: docSnap.data().ownerUid === currentUid,
+                joinedAt: Date.now(),
+                totalScore: totalScore,
+                bestScore: bestScore,
+                lastScore: 0,
+                lastPlayedAt: dateStr,
+                lastCourse: "未プレイ"
+              };
+              await groupRef.update(updateObj);
+
+              const myDoc = await myGroupsRef.get().catch(() => null);
+              let currentCodes = [];
+              if (myDoc && myDoc.exists && myDoc.data().groupCodes) {
+                currentCodes = myDoc.data().groupCodes;
+              }
+              if (!currentCodes.includes(cleanCode)) {
+                currentCodes.push(cleanCode);
+              }
+              await myGroupsRef.set({ groupCodes: currentCodes }, { merge: true }).catch(() => {});
+            }
+          } catch (e) {
+            console.warn("Firestore permission error on join, using local fallback mode:", e);
+          }
         }
 
+        const existingGroup = allGroupsData[cleanCode] || {
+          code: cleanCode,
+          ownerUid: "",
+          ownerName: "不明",
+          createdAt: Date.now(),
+          settings: { showRanking: false, showLastPlay: false, showScores: false },
+          members: {}
+        };
         const updatedMembers = {
-          ...(existingGroup.members || {}),
-          [currentUid]: {
-            id: currentUid,
-            nickname: nick,
-            isOwner: false,
-            bestScore: bestScore,
+          ...existingGroup.members,
+          [currentUid]: { 
+            id: currentUid, 
+            nickname: name, 
+            isOwner: existingGroup.ownerUid === currentUid, 
+            joinedAt: Date.now(),
             totalScore: totalScore,
+            bestScore: bestScore,
             lastScore: 0,
-            lastCourse: "ー",
-            lastPlayedAt: new Date().toLocaleDateString('ja-JP')
+            lastPlayedAt: dateStr,
+            lastCourse: "未プレイ"
           }
         };
-
         const updatedGroup = { ...existingGroup, members: updatedMembers };
-        const updatedCodes = [...myGroupCodes, codeToJoin];
-        const updatedAllGroups = { ...allGroupsData, [codeToJoin]: updatedGroup };
+        setAllGroupsData(prev => {
+          const nextAll = { ...prev, [cleanCode]: updatedGroup };
+          safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(nextAll));
+          return nextAll;
+        });
 
-        setMyGroupCodes(updatedCodes);
-        setAllGroupsData(updatedAllGroups);
-        safeSetLocalStorage("japan_map_quiz_my_groups", JSON.stringify(updatedCodes));
-        safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(updatedAllGroups));
+        const nextMy = Array.from(new Set([...myGroupCodes, cleanCode]));
+        setMyGroupCodes(nextMy);
+        safeSetLocalStorage("japan_map_quiz_my_groups", JSON.stringify(nextMy));
 
-        if (firebaseAvailable && db) {
-          try {
-            db.collection(appId + "_groups").doc(codeToJoin).get().then(doc => {
-              if (doc.exists) {
-                const gData = doc.data();
-                gData.members = { ...(gData.members || {}), [currentUid]: updatedMembers[currentUid] };
-                db.collection(appId + "_groups").doc(codeToJoin).set(gData, { merge: true });
-                setAllGroupsData(prev => ({ ...prev, [codeToJoin]: gData }));
-              } else {
-                db.collection(appId + "_groups").doc(codeToJoin).set(updatedGroup);
-              }
-            });
-          } catch(e) { console.warn("Firestore join group error", e); }
-        }
-
+        setGroupNoticeMsg(`グループ (${cleanCode}) に所属しました！`);
         setJoinGroupCodeInput("");
-        setGroupNoticeMsg(`グループ「${codeToJoin}」に参加しました！`);
       };
 
-      const handleLeaveGroup = (code) => {
-        const updatedCodes = myGroupCodes.filter(c => c !== code);
-        const updatedAllGroups = { ...allGroupsData };
-        delete updatedAllGroups[code];
+      const handleLeaveGroup = async (code) => {
+        const currentUid = authUser?.uid || auth?.currentUser?.uid || myUserId;
+        const nextMy = myGroupCodes.filter(c => c !== code);
+        setMyGroupCodes(nextMy);
+        safeSetLocalStorage("japan_map_quiz_my_groups", JSON.stringify(nextMy));
 
-        setMyGroupCodes(updatedCodes);
-        setAllGroupsData(updatedAllGroups);
-        safeSetLocalStorage("japan_map_quiz_my_groups", JSON.stringify(updatedCodes));
-        safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(updatedAllGroups));
-
-        setGroupNoticeMsg(`グループ「${code}」を脱退しました。`);
-      };
-
-      const handleToggleGroupSetting = (code, settingKey) => {
-        const group = allGroupsData[code];
-        if (!group) return;
-
-        const currentSettings = group.settings || { showRanking: true, showLastPlay: true, showScores: true };
-        const updatedSettings = { ...currentSettings, [settingKey]: !currentSettings[settingKey] };
-
-        const updatedGroup = { ...group, settings: updatedSettings };
-        const updatedAllGroups = { ...allGroupsData, [code]: updatedGroup };
-
-        setAllGroupsData(updatedAllGroups);
-        safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(updatedAllGroups));
-
-        if (firebaseAvailable && db) {
+        if (firebaseAvailable && db && currentUid) {
           try {
-            db.collection(appId + "_groups").doc(code).update({ settings: updatedSettings });
-          } catch(e) { console.warn("Firestore update settings error", e); }
+            const groupRef = db.doc(`artifacts/${appId}/public/data/groups/${code}`);
+            const myGroupsRef = db.doc(`artifacts/${appId}/users/${currentUid}/groups/my_groups`);
+
+            const updateObj = {};
+            updateObj[`members.${currentUid}`] = firebase.firestore.FieldValue.delete();
+            await groupRef.update(updateObj).catch(() => {});
+            await myGroupsRef.set({ groupCodes: nextMy }).catch(() => {});
+          } catch (e) {}
         }
+        setGroupNoticeMsg(`グループ (${code}) から脱退しました。`);
       };
+
+      useEffect(() => {
+        if (!firebaseAvailable || !db) return;
+        const currentUid = authUser?.uid || auth?.currentUser?.uid || myUserId;
+        if (!currentUid) return;
+
+        const myGroupsRef = db.doc(`artifacts/${appId}/users/${currentUid}/groups/my_groups`);
+        const unsubscribeMy = myGroupsRef.onSnapshot(
+          doc => {
+            if (doc.exists && doc.data().groupCodes) {
+              setMyGroupCodes(doc.data().groupCodes);
+              safeSetLocalStorage("japan_map_quiz_my_groups", JSON.stringify(doc.data().groupCodes));
+            }
+          },
+          err => {
+            console.warn("my_groups snapshot listener notice:", err.message);
+          }
+        );
+
+        return () => unsubscribeMy();
+      }, [authUser, myUserId]);
+
+      useEffect(() => {
+        if (!firebaseAvailable || !db || myGroupCodes.length === 0) return;
+
+        const unsubscribers = myGroupCodes.map(code => {
+          const groupRef = db.doc(`artifacts/${appId}/public/data/groups/${code}`);
+          return groupRef.onSnapshot(
+            doc => {
+              if (doc.exists) {
+                setAllGroupsData(prev => {
+                  const nextAll = { ...prev, [code]: doc.data() };
+                  safeSetLocalStorage("japan_map_quiz_all_groups", JSON.stringify(nextAll));
+                  return nextAll;
+                });
+              }
+            },
+            err => {
+              console.warn(`Group ${code} snapshot listener notice:`, err.message);
+            }
+          );
+        });
+
+        return () => { unsubscribers.forEach(unsub => unsub && unsub()); };
+      }, [myGroupCodes]);
 
       return (
         <div className="flex flex-col min-h-screen justify-between bg-slate-50">
@@ -1399,16 +1305,19 @@
                   </div>
                 )}
 
-                {/* GAME ACTIVE POPUP FEEDBACK (Only visible when game is active) */}
+                {/* GAME ACTIVE POPUP FEEDBACK */}
                 {quizActive && !quizFinished && quizFeedback && (
-                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 p-2 text-center w-full max-w-sm animate-bounce">
+                  <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 p-2 text-center w-full max-w-sm pointer-events-none">
                     {quizFeedback.correct ? (
-                      <div className="bg-white/95 border-4 border-emerald-400 text-emerald-800 rounded-3xl p-6 shadow-2xl backdrop-blur-md flex flex-col items-center justify-center gap-2">
-                        <div className="text-7xl drop-shadow-md select-none transform scale-110">⭕</div><h4 className="text-2xl font-black mt-2"><ruby>正解<rt>せいかい</rt></ruby>！</h4><p className="text-xs font-bold text-slate-600 mt-1">{quizFeedback.message}</p>
+                      <div className="bg-white/95 border-4 border-emerald-400 text-emerald-800 rounded-3xl p-6 shadow-2xl backdrop-blur-md flex flex-col items-center justify-center gap-2 animate-bounce">
+                        <div className="text-7xl drop-shadow-md select-none transform scale-110">⭕</div>
+                        <h4 className="text-2xl font-black mt-2"><ruby>正解<rt>せいかい</rt></ruby>！</h4>
+                        <p className="text-xs font-bold text-slate-600 mt-1">{quizFeedback.message}</p>
                       </div>
                     ) : (
-                      <div className="bg-white/95 border-4 border-red-400 text-red-800 rounded-2xl p-4 shadow-2xl backdrop-blur-md flex flex-col items-center justify-center gap-1 max-w-[90%] mx-auto">
-                        <div className="text-5xl drop-shadow-sm select-none">❌</div><div className="text-slate-400 text-[10px] font-black tracking-widest uppercase mt-0.5"><ruby>正解<rt>せいかい</rt></ruby>は...</div>
+                      <div className="bg-white/95 border-4 border-red-400 text-red-800 rounded-2xl p-4 shadow-2xl backdrop-blur-md flex flex-col items-center justify-center gap-1 max-w-[90%] mx-auto animate-bounce">
+                        <div className="text-5xl drop-shadow-sm select-none">❌</div>
+                        <div className="text-slate-400 text-[10px] font-black tracking-widest uppercase mt-0.5"><ruby>正解<rt>せいかい</rt></ruby>は...</div>
                         <h4 className="text-3xl sm:text-4xl font-black text-red-600 drop-shadow-md leading-normal my-0.5 select-all">
                           {(() => {
                             if (quizMode === "specialties") { return renderSpecialtiesList(currentTarget?.specialties, false); }
@@ -1422,7 +1331,7 @@
                   </div>
                 )}
 
-                {}
+                {/* Map SVG Component */}
                 <svg className="geolonia-svg-map w-full h-[320px] sm:h-[380px] transition-all duration-700 ease-in-out" viewBox={currentViewBox} xmlns="http://www.w3.org/2000/svg">
                   <g className="svg-map" transform="matrix(1.028807, 0, 0, 1.028807, -47.544239, -28.806583)">
                     <g className="prefectures" transform="matrix(1, 0, 0, 1, 6, 18)">
@@ -1595,7 +1504,7 @@
                         {renderPrefectureLabel(6)}
                       </g>
                       <g onClick={() => handlePrefectureClick("5")} className={`akita prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 5 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("5")} stroke={selectedCode === 5 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 5 ? "3.5" : "1.5"} transform="translate(617, 352)" style={{ display: isPrefectureVisible("5") ? "block" : "none" }}>
-                        <polygon points="54 97 47 102 43 101 39 100 37 95 23 92 19 87 9 88 11 78 16 69 17 47 11 39 3 42 0 33 6 36 12 28 15 19 15 11 10 6 14 7 17 3 29 5 32 2 39 7 42 5 45 7 55 0 55 5 60 5 59 16 55 21 57 39 52 40 55 44 52 48 54 53 50 59 47 70 55 83 52 86 55 91" />
+                        <polygon points="54 97 47 102 43 101 39 100 37 95 23 92 19 87 9 88 11 78 16 69 17 47 11 39 3 42 0 33 6 36 12 28 15 19 15 11 10 6 14 7 17 3 29 5 32 2 39 7 42 5 45 7 55 0 55 5 60 5 59 16 55 21 57 39 52 40 55 44 52 48 54 53 50 59 47 70 55 83 52 86 55 91"/>
                         {renderPrefectureLabel(5)}
                       </g>
                       <g onClick={() => handlePrefectureClick("4")} className={`miyagi prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 4 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("4")} stroke={selectedCode === 4 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 4 ? "3.5" : "1.5"} transform="translate(648, 445)" style={{ display: isPrefectureVisible("4") ? "block" : "none" }}>
@@ -1611,7 +1520,7 @@
                         {renderPrefectureLabel(2)}
                       </g>
                       <g onClick={() => handlePrefectureClick("1")} className={`hokkaido prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 1 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("1")} stroke={selectedCode === 1 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 1 ? "3.5" : "1.5"} transform={activeZoomRegionKey === "kyushu_okinawa" || rouletteKey === "kyushu_okinawa" ? "translate(-80, 1040) scale(0.5)" : "translate(602, 10)"} style={{ display: isPrefectureVisible("1") ? "block" : "none" }}>
-                        <path d="M4,240 L3,245 L0,246 L0,237 L6,235 L4,240 Z M33,261 L32,250 L28,243 L23,242 L21,237 L17,236 L15,231 L19,223 L17,212 L19,209 L28,207 L34,198 L37,202 L39,201 L43,192 L49,187 L39,173 L40,166 L47,164 L60,174 L71,171 L71,174 L78,177 L83,174 L89,165 L83,140 L86,135 L93,132 L97,126 L96,103 L100,95 L101,85 L98,67 L90,48 L93,39 L92,33 L94,36 L99,35 L105,28 L131,55 L139,68 L155,85 L184,104 L213,109 L214,113 L219,118 L238,118 L260,91 L262,96 L252,119 L252,129 L255,135 L265,138 L263,140 L264,137 L258,137 L263,149 L269,156 L273,157 L280,149 L287,148 L277,156 L275,163 L258,166 L256,172 L252,177 L247,177 L245,175 L246,173 L243,172 L240,178 L243,180 L228,181 L220,178 L205,186 L191,202 L182,216 L179,225 L180,240 L178,248 L164,237 L141,228 L113,211 L100,209 L103,206 L88,214 L72,230 L69,227 L73,227 L68,226 L66,220 L58,212 L47,213 L42,220 L39,230 L40,234 L52,242 L62,242 L71,254 L80,257 L82,260 L76,265 L72,267 L63,263 L60,265 L60,261 L57,260 L55,265 L48,269 L48,278 L40,282 L37,287 L30,284 L27,278 L28,269 L33,261 Z M71,48 L73,45 L77,47 L79,52 L75,55 L71,52 L71,48 Z M65,35 L65,33 L67,35 L66,45 L63,35 L65,35 Z M369,17 L367,13 L365,13 L363,17 L365,23 L364,26 L359,28 L357,35 L350,34 L351,41 L341,50 L341,54 L335,54 L335,56 L339,58 L339,62 L336,65 L332,64 L332,69 L329,66 L330,71 L327,78 L331,79 L336,70 L341,69 L346,59 L356,50 L358,40 L363,43 L369,41 L384,24 L397,15 L406,13 L407,10 L404,6 L407,2 L402,0 L396,2 L384,20 L373,22 L369,17 Z M290,99 L295,93 L303,91 L308,84 L311,85 L314,79 L304,82 L296,77 L293,79 L289,89 L280,104 L280,107 L266,122 L268,129 L273,128 L273,132 L274,119 L282,114 L283,109 L286,109 L287,102 L290,99 Z M322,125 L334,115 L329,113 L325,116 L326,117 L319,119 L319,123 L321,122 L322,125 Z M300,142 L304,137 L297,139 L300,142 Z M291,146 L293,143 L289,144 L291,146 Z"/>
+                        <path d="M4,240 L3,245 L0,246 L0,237 L6,235 L4,240 Z M33,261 L32,250 L28,243 L23,242 L21,237 L17,236 L15,231 L19,223 L17,212 L19,209 L28,207 L34,198 L37,202 L39,201 L43,192 L49,187 L39,173 L40,166 L47,164 L60,174 L71,171 L71,174 L78,177 L83,174 L89,165 L83,140 L86,135 L93,132 L97,126 L96,103 L100,95 L101,85 L98,67 L90,48 L93,39 L92,33 L94,36 L99,35 L105,28 L131,55 L139,68 L155,85 L184,104 L213,109 L214,113 L219,118 L238,118 L260,91 L262,96 L252,119 L252,129 L255,135 L265,138 L263,140 L264,137 L258,137 L263,149 L269,156 L273,157 L280,149 L287,148 L277,156 L275,163 L258,166 L256,172 L252,177 L247,177 L245,175 L246,173 L243,172 L240,178 L243,180 L228,181 L220,178 L205,186 L191,202 L182,216 L179,225 L180,240 L178,248 L164,237 L141,228 L113,211 L100,209 L103,206 L88,214 L72,230 L69,227 L73,227 L68,226 L66,220 L58,212 L47,213 L42,220 L39,230 L40,234 L52,242 L62,242 L71,254 L80,257 L82,260 L76,265 L72,267 L63,263 L60,265 L60,261 L57,260 L55,265 L48,269 L48,278 L40,282 L37,287 L30,284 L27,278 L28,269 L33,261 Z M71,48 L73,45 L77,47 L79,52 L75,55 L71,52 L71,48 Z M65,35 L65,33 L67,35 L66,45 L63,35 L65,35 Z M369,17 L367,13 L365,13 L363,17 L365,23 L364,26 L359,28 L357,35 L350,34 L351,41 L341,50 L341,54 L335,54 L335,56 L339,58 L339,62 L336,65 L332,64 L332,69 L329,66 L330,71 L327,78 L331,79 L336,70 L341,69 L346,59 L356,50 L358,40 L363,43 L369,41 L384,24 L397,15 L406,13 L407,10 L404,6 L402,0 L396,2 L384,20 L373,22 L369,17 Z M290,99 L295,93 L303,91 L308,84 L311,85 L314,79 L304,82 L296,77 L293,79 L289,89 L280,104 L280,107 L266,122 L268,129 L273,128 L273,132 L274,119 L282,114 L283,109 L286,109 L287,102 L290,99 Z M322,125 L334,115 L329,113 L325,116 L326,117 L319,119 L319,123 L321,122 L322,125 Z M300,142 L304,137 L297,139 L300,142 Z M291,146 L293,143 L289,144 L291,146 Z"/>
                         {renderPrefectureLabel(1)}
                       </g>
                     </g>
@@ -1622,65 +1531,7 @@
                   </g>
                 </svg>
 
-                {quizActive && !quizFinished && (quizMode === "choices" || quizMode === "specialties" || quizMode === "capital") && (
-                  <div className="w-full mt-2 bg-slate-50 border border-slate-200 p-2.5 rounded-2xl z-10 animate-fade-in">
-                    <p className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 text-center tracking-wider"><ruby>選択肢<rt>せんたくし</rt></ruby>から選んでね！</p>
-                    <div className="grid grid-cols-2 gap-2">
-                      {currentChoices.map((choiceCode) => {
-                        const pref = PREFECTURE_DATA[choiceCode];
-                        const isSelectedChoice = selectedCode === choiceCode;
-                        const isCorrectSpecialtyInPractice = isPractice && quizMode === "specialties" && choiceCode === parseInt(currentTarget?.code, 10);
-                        
-                        let btnClass = "bg-red-500 hover:bg-red-600 text-white border-red-600 active:scale-95 shadow-md shadow-red-200";
-                        if (isSelectedChoice) {
-                          btnClass = "bg-red-700 text-white border-red-800 scale-95 shadow-inner";
-                        } else if (isCorrectSpecialtyInPractice) {
-                          btnClass = "bg-emerald-500 hover:bg-emerald-600 text-white border-emerald-600 active:scale-95 shadow-md shadow-emerald-200 ring-2 ring-emerald-300 font-black animate-pulse";
-                        }
-
-                        return (
-                          <button key={choiceCode} onClick={() => handleChoiceButtonClick(choiceCode)} disabled={!!quizFeedback} className={`py-2.5 px-3 rounded-xl font-extrabold text-sm sm:text-base border transition-all text-center ${btnClass}`}>
-                            {quizMode === "specialties" ? renderSpecialtiesList(pref?.specialties, false) : quizMode === "capital" ? <ruby>{pref?.capital}<rt>{pref?.capitalRuby}</rt></ruby> : <ruby>{pref?.name}<rt>{pref?.ruby}</rt></ruby>}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {quizActive && !quizFinished && quizMode === "capitalInput" && (
-                  <div className="w-full mt-2 bg-slate-50 border border-slate-200 p-2.5 rounded-2xl z-10 animate-fade-in">
-                    <p className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 text-center tracking-wider">
-                      <ruby>県庁所在地名<rt>けんちょうしょざいちめい</rt></ruby>を<ruby>入力<rt>にゅうりょく</rt></ruby>してね！
-                    </p>
-                    <form 
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        handleInputSubmit();
-                      }}
-                      className="flex gap-2"
-                    >
-                      <input 
-                        type="text" 
-                        ref={inputRef}
-                        value={userInputValue}
-                        onChange={(e) => handleInputChange(e.target.value)}
-                        disabled={!!quizFeedback}
-                        placeholder="例：さっぽろし / 札幌市"
-                        className="flex-1 py-2.5 px-3 rounded-xl border border-slate-300 font-bold text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-50"
-                        autoFocus
-                      />
-                      <button 
-                        type="submit"
-                        disabled={!!quizFeedback || !userInputValue.trim()}
-                        className="py-2.5 px-5 rounded-xl font-extrabold text-sm bg-indigo-500 hover:bg-indigo-600 text-white border border-indigo-600 active:scale-95 shadow-md disabled:opacity-50 disabled:pointer-events-none"
-                      >
-                        <ruby>送信<rt>そうしん</rt></ruby>
-                      </button>
-                    </form>
-                  </div>
-                )}
-
+                {/* Home Page Menu Overlays */}
                 {!quizActive && !quizFinished && (
                   <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-4 text-center z-20 backdrop-blur-xs">
                     <div className="bg-white border border-slate-200 p-6 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in max-h-[92vh] overflow-y-auto my-auto">
@@ -1802,7 +1653,7 @@
                                 <button onClick={() => setQuizChoiceMode("touch")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "touch" ? "bg-white text-emerald-600 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>タッチ</button>
                                 <button onClick={() => setQuizChoiceMode("choices")} className={`flex-1 py-2 px-1 rounded-xl transition-all ${quizMode === "choices" ? "bg-white text-rose-500 shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>四択</button>
                                 
-                                <div className="relative flex-1 group">
+                                <div className="relative flex-1 lock-tooltip-container">
                                   <button 
                                     disabled={!isSpecialtiesUnlocked}
                                     onClick={() => setQuizChoiceMode("specialties")} 
@@ -1810,11 +1661,14 @@
                                   >
                                     {isSpecialtiesUnlocked ? <><ruby>有名<rt>ゆうめい</rt></ruby>なもの</> : <>🔒 <ruby>有名<rt>ゆうめい</rt></ruby>なもの</>}
                                   </button>
+                                  {!isSpecialtiesUnlocked && (
+                                    <div className="lock-tooltip">地方モードを３つクリアでロック解除</div>
+                                  )}
                                 </div>
                               </div>
                               
                               <div className="bg-slate-100 p-1 rounded-2xl flex gap-1 border border-slate-200 text-xs sm:text-sm font-black w-full">
-                                <div className="relative flex-1 group">
+                                <div className="relative flex-1 lock-tooltip-container">
                                   <button 
                                     disabled={!isCapitalUnlocked}
                                     onClick={() => setQuizChoiceMode("capital")} 
@@ -1822,9 +1676,12 @@
                                   >
                                     {isCapitalUnlocked ? <>県庁所在地(四択)</> : <>🔒 県庁所在地(四択)</>}
                                   </button>
+                                  {!isCapitalUnlocked && (
+                                    <div className="lock-tooltip">地方モードを全部クリアでロック解除</div>
+                                  )}
                                 </div>
 
-                                <div className="relative flex-1 group">
+                                <div className="relative flex-1 lock-tooltip-container">
                                   <button 
                                     disabled={!isCapitalInputUnlocked}
                                     onClick={() => setQuizChoiceMode("capitalInput")} 
@@ -1832,12 +1689,15 @@
                                   >
                                     {isCapitalInputUnlocked ? <>県庁所在地(入力)</> : <>🔒 県庁所在地(入力)</>}
                                   </button>
+                                  {!isCapitalInputUnlocked && (
+                                    <div className="lock-tooltip">全国モードを全部クリアでロック解除</div>
+                                  )}
                                 </div>
                               </div>
                             </div>
                             
                             <div className="flex flex-col gap-2.5">
-                              <button onClick={() => setShowPracticeSelect(true)} className="w-full bg-sky-500 hover:bg-sky-600 text-white font-extrabold py-1.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">🔰 <ruby>練習<rt>れんしゅう</rt></ruby>モード</button>
+                              <button onClick={() => setShowPracticeSelect(true)} className="w-full bg-sky-500 hover:bg-sky-600 text-white font-extrabold py-2 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">🔰 <ruby>練習<rt>れんしゅう</rt></ruby>モード</button>
                               
                               <div className="grid grid-cols-2 gap-3">
                                 <button onClick={() => setShowRegionSelect(true)} className="w-full h-32 sm:h-36 bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold p-3 rounded-2xl transition-all shadow-md text-base sm:text-lg hover:-translate-y-0.5 flex flex-col items-center justify-center gap-2">
@@ -1850,510 +1710,11 @@
                                 </button>
                               </div>
 
-                              <button onClick={startRecommendedQuiz} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold py-1.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">🔥 おすすめ（<ruby>弱点克服<rt>じゃくてんこくふく</rt></ruby>）モード</button>
-                              <button onClick={() => setShowMultiplayer(true)} className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-1.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">👥 <ruby>友<rt>とも</rt></ruby>だちと<ruby>対戦<rt>たいせん</rt></ruby></button>
-                              
-                              {/* Bottom Group Button */}
-                              <button 
-                                onClick={() => setShowGroupModal(true)} 
-                                className="w-full bg-purple-600 hover:bg-purple-700 text-white font-extrabold py-1.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5 flex items-center justify-center gap-2"
-                              >
-                                <span>📋</span> <ruby>グループ<rt>ぐるーぷ</rt></ruby>
-                              </button>
+                              <button onClick={startRecommendedQuiz} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold py-2.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">🔥 おすすめ（<ruby>弱点克服<rt>じゃくてんこくふく</rt></ruby>）モード</button>
                             </div>
                           </div>
                         );
                       })()}
-                    </div>
-                  </div>
-                )}
-
-                {showGroupModal && (
-                  <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center p-4 text-center z-30 backdrop-blur-xs">
-                    <div className="bg-white border border-slate-200 p-5 sm:p-6 rounded-[2rem] max-w-xl w-full shadow-2xl animate-fade-in max-h-[92vh] overflow-y-auto flex flex-col justify-between">
-                      <div>
-                        <h3 className="text-2xl font-black text-slate-800 mb-4 flex justify-center items-center gap-2">
-                          <span>👥</span> <ruby>グループ<rt>ぐるーぷ</rt></ruby>
-                        </h3>
-
-                        {groupNoticeMsg && (
-                          <div className="bg-rose-50 border border-rose-300 text-rose-600 font-bold py-2 px-3 rounded-xl mb-4 text-xs sm:text-sm animate-pulse">
-                            {groupNoticeMsg}
-                          </div>
-                        )}
-
-                        {/* Section 1: Create Group */}
-                        <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl mb-4 text-left">
-                          <h4 className="text-xs font-extrabold text-slate-500 uppercase mb-2">
-                            ✨ <ruby>新しくグループを作る<rt>あたらしくぐるーぷをつくる</rt></ruby>
-                          </h4>
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="text-xs font-bold text-slate-600">自動生成コード:</span>
-                            <span className="font-mono font-black text-indigo-700 bg-indigo-50 border border-indigo-200 px-3 py-1 rounded-xl text-lg tracking-wider">
-                              {createdCodePreview}
-                            </span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleCreateNewGroup}
-                            className="w-full bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-extrabold py-2.5 px-4 rounded-xl shadow-md transition-all text-sm"
-                          >
-                            このコードでグループを作成
-                          </button>
-                        </div>
-
-                        {/* Section 2: Join Group */}
-                        <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl mb-4 text-left">
-                          <h4 className="text-xs font-extrabold text-slate-500 uppercase mb-2">
-                            🔑 <ruby>既存グループに参加<rt>きそんぐるーぷにさんか</rt></ruby>
-                          </h4>
-                          <div className="flex gap-2">
-                            <input
-                              type="text"
-                              value={joinGroupCodeInput}
-                              onChange={(e) => setJoinGroupCodeInput(e.target.value)}
-                              placeholder="8桁コードを入力"
-                              maxLength={8}
-                              className="flex-1 py-2 px-3 rounded-xl border border-slate-300 font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => handleJoinGroupSubmit()}
-                              className="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-2 px-4 rounded-xl transition-all shadow-sm text-sm whitespace-nowrap"
-                            >
-                              参加する
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Section 3: Joined Group List */}
-                        <div className="text-left mb-4">
-                          <h4 className="text-xs font-extrabold text-slate-500 uppercase mb-1.5 flex justify-between items-center">
-                            <span>📋 <ruby>所属グループ一覧<rt>しょぞくぐるーぷいちらん</rt></ruby></span>
-                            <span className="bg-teal-100 text-teal-800 px-2 py-0.5 rounded-full text-[10px] font-black">
-                              {myGroupCodes.length} 個
-                            </span>
-                          </h4>
-                          {myGroupCodes.length === 0 ? (
-                            <p className="text-xs text-slate-400 font-bold bg-slate-50 border border-slate-200 p-4 rounded-2xl text-center">
-                              まだ所属しているグループはありません。
-                            </p>
-                          ) : (
-                            <div className="flex flex-col gap-2.5 max-h-80 overflow-y-auto">
-                              {myGroupCodes.map(code => {
-                                const group = allGroupsData[code] || { code, ownerName: "読み込み中...", members: {}, settings: { showRanking: false, showLastPlay: false, showScores: false } };
-                                const currentUid = authUser?.uid || auth?.currentUser?.uid || myUserId;
-                                const isOwner = group.ownerUid === currentUid;
-                                const memberList = Object.values(group.members || {});
-                                const isExpanded = expandedGroupCode === code;
-                                const settings = group.settings || { showRanking: false, showLastPlay: false, showScores: false };
-
-                                const sortedMembers = [...memberList].sort((a, b) => (b.bestScore || 0) - (a.bestScore || 0));
-
-                                return (
-                                  <div key={code} className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl flex flex-col gap-2.5">
-                                    <div className="flex justify-between items-center">
-                                      <div className="flex items-center gap-2">
-                                        <span className="font-mono font-black text-teal-800 bg-white border border-teal-200 px-2.5 py-1 rounded-lg text-xs tracking-wider">
-                                          {code}
-                                        </span>
-                                        {isOwner && (
-                                          <span className="bg-amber-100 text-amber-800 border border-amber-300 text-[9px] font-black px-1.5 py-0.5 rounded-md">
-                                            👑 オーナー
-                                          </span>
-                                        )}
-                                      </div>
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-[10px] text-slate-500 font-bold">
-                                          👤 メンバー: {memberList.length || 1}人
-                                        </span>
-                                        <button 
-                                          type="button"
-                                          onClick={() => handleLeaveGroup(code)}
-                                          className="bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-[10px] font-bold py-1 px-2 rounded-lg transition-all"
-                                        >
-                                          脱退
-                                        </button>
-                                      </div>
-                                    </div>
-
-                                    {/* Expand/Collapse Rankings Button */}
-                                    <button
-                                      type="button"
-                                      onClick={() => setExpandedGroupCode(isExpanded ? null : code)}
-                                      className="w-full bg-white hover:bg-teal-50 border border-teal-200 text-teal-800 font-bold text-xs py-2 px-3 rounded-xl transition-all flex justify-between items-center shadow-xs"
-                                    >
-                                      <span>📊 グループスコア・ランキング</span>
-                                      <span>{isExpanded ? "▲ 閉じる" : "▼ 開く"}</span>
-                                    </button>
-
-                                    {/* Expanded Details View */}
-                                    {isExpanded && (
-                                      <div className="bg-white border border-slate-200 p-3 rounded-xl flex flex-col gap-3 mt-1 text-xs animate-fade-in">
-                                        
-                                        {/* Owner Settings Controls */}
-                                        {isOwner ? (
-                                          <div className="bg-teal-50 border border-teal-200 p-2.5 rounded-xl flex flex-col gap-2 text-[11px]">
-                                            <span className="font-extrabold text-teal-900 flex items-center gap-1">
-                                              ⚙️ グループ全体の公開設定 (オーナー専用)
-                                            </span>
-                                            <div className="grid grid-cols-1 gap-1.5 font-bold text-slate-700">
-                                              <label className="flex items-center justify-between bg-white px-2.5 py-1.5 rounded-lg border border-teal-100 cursor-pointer hover:bg-teal-50/50">
-                                                <span>🏆 スコアランキング全員公開</span>
-                                                <input 
-                                                  type="checkbox" 
-                                                  checked={!!settings.showRanking} 
-                                                  onChange={() => handleToggleGroupSetting(code, 'showRanking')}
-                                                  className="accent-teal-600 w-4 h-4 cursor-pointer"
-                                                />
-                                              </label>
-                                              <label className="flex items-center justify-between bg-white px-2.5 py-1.5 rounded-lg border border-teal-100 cursor-pointer hover:bg-teal-50/50">
-                                                <span>📅 最終プレイ日時・前回スコア全員公開</span>
-                                                <input 
-                                                  type="checkbox" 
-                                                  checked={!!settings.showLastPlay} 
-                                                  onChange={() => handleToggleGroupSetting(code, 'showLastPlay')}
-                                                  className="accent-teal-600 w-4 h-4 cursor-pointer"
-                                                />
-                                              </label>
-                                              <label className="flex items-center justify-between bg-white px-2.5 py-1.5 rounded-lg border border-teal-100 cursor-pointer hover:bg-teal-50/50">
-                                                <span>🎯 ベストスコア・累計スコア全員公開</span>
-                                                <input 
-                                                  type="checkbox" 
-                                                  checked={!!settings.showScores} 
-                                                  onChange={() => handleToggleGroupSetting(code, 'showScores')}
-                                                  className="accent-teal-600 w-4 h-4 cursor-pointer"
-                                                />
-                                              </label>
-                                            </div>
-                                          </div>
-                                        ) : (
-                                          <div className="text-[10px] text-slate-400 font-bold flex justify-between items-center bg-slate-50 p-2 rounded-lg">
-                                            <span>🔒 グループの公開設定はオーナーが変更できます</span>
-                                          </div>
-                                        )}
-
-                                        {/* Member Rankings List */}
-                                        {(!isOwner && !settings.showRanking) ? (
-                                          <p className="text-slate-400 font-bold text-center py-3 bg-slate-50 rounded-xl text-xs">
-                                            🔒 グループオーナーの設定によりランキングは非公開です
-                                          </p>
-                                        ) : (
-                                          <div className="flex flex-col gap-2">
-                                            <span className="font-extrabold text-slate-700 text-[11px] flex justify-between items-center">
-                                              <span>🏆 グループランキング (全{sortedMembers.length}人)</span>
-                                              <span className="text-[9px] text-slate-400 font-bold">※プレイ時自動更新</span>
-                                            </span>
-                                            <div className="flex flex-col gap-1.5">
-                                              {sortedMembers.map((m, rankIdx) => {
-                                                const isSelf = m.id === currentUid;
-                                                const canViewScores = isOwner || isSelf || !!settings.showScores;
-                                                const canViewLastPlay = isOwner || isSelf || !!settings.showLastPlay;
-
-                                                return (
-                                                  <div 
-                                                    key={m.id} 
-                                                    className={`p-2.5 rounded-xl border flex flex-col gap-1.5 ${
-                                                      isSelf ? "bg-teal-50/80 border-teal-300" : "bg-slate-50 border-slate-200"
-                                                    }`}
-                                                  >
-                                                    <div className="flex justify-between items-center font-bold">
-                                                      <span className="flex items-center gap-1.5 truncate">
-                                                        <span className="font-black text-amber-600 text-xs min-w-[24px]">
-                                                          {rankIdx === 0 ? "🥇" : rankIdx === 1 ? "🥈" : rankIdx === 2 ? "🥉" : `${rankIdx + 1}位`}
-                                                        </span>
-                                                        <span className="text-slate-800 font-extrabold truncate">{m.nickname || "名無し"}</span>
-                                                        {m.isOwner && <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-black">👑 オーナー</span>}
-                                                        {isSelf && <span className="text-[9px] bg-teal-100 text-teal-800 px-1 py-0.5 rounded font-bold">(自分)</span>}
-                                                      </span>
-                                                      
-                                                      {canViewScores && (
-                                                        <span className="text-rose-600 font-black whitespace-nowrap ml-2">
-                                                          ベスト: {m.bestScore || 0}pt
-                                                        </span>
-                                                      )}
-                                                    </div>
-
-                                                    <div className="flex flex-wrap justify-between items-center text-[10px] text-slate-500 font-medium pt-1 border-t border-slate-200/60 gap-x-2 gap-y-0.5">
-                                                      {canViewScores && (
-                                                        <span>累計: <strong className="text-slate-700 font-black">{m.totalScore || 0}pt</strong></span>
-                                                      )}
-                                                      {canViewLastPlay && (
-                                                        <>
-                                                          <span>前回: <strong className="text-slate-700 font-bold">{m.lastScore || 0}pt</strong> ({m.lastCourse || "クイズ"})</span>
-                                                          <span>最終プレイ: <strong className="text-slate-700 font-bold">{m.lastPlayedAt || "未プレイ"}</strong></span>
-                                                        </>
-                                                      )}
-                                                    </div>
-                                                  </div>
-                                                );
-                                              })}
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      <button 
-                        type="button"
-                        onClick={() => { setShowGroupModal(false); setGroupNoticeMsg(""); }} 
-                        className="w-full max-w-xs mx-auto block bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-2.5 px-4 rounded-xl transition-all text-sm text-center border border-slate-200 mt-2"
-                      >
-                        🏠 ホームに<ruby>戻る<rt>もどる</rt></ruby>
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {}
-                {showMultiplayer && (
-                  <div className="absolute inset-0 bg-slate-900/60 flex items-center justify-center p-4 text-center z-30 backdrop-blur-xs">
-                    <div className="bg-white border border-slate-200 p-5 sm:p-6 rounded-[2rem] max-w-xl w-full shadow-2xl animate-fade-in max-h-[92vh] overflow-y-auto flex flex-col justify-between">
-                      <div>
-                        <h3 className="text-2xl font-black text-slate-800 mb-4 flex justify-center items-center gap-2">
-                          <span>👥</span> <ruby>友だちと対戦<rt>ともだちとたいせん</rt></ruby>
-                        </h3>
-
-                        {multiNotice && (
-                          <div className="bg-rose-50 border border-rose-300 text-rose-600 font-bold py-2 px-3 rounded-xl mb-4 text-xs sm:text-sm animate-pulse">
-                            {multiNotice}
-                          </div>
-                        )}
-
-                        <div className="bg-slate-50 border border-slate-200 p-3 rounded-2xl mb-4 text-left">
-                          <label className="text-xs font-extrabold text-slate-500 uppercase block mb-1">
-                            👤 ニックネーム
-                          </label>
-                          <input
-                            type="text"
-                            value={multiNickname}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setMultiNickname(val);
-                              safeSetLocalStorage("japan_map_quiz_nickname", val);
-                            }}
-                            placeholder="プレイヤー名を入力"
-                            maxLength={12}
-                            className="w-full py-2 px-3 rounded-xl border border-slate-300 font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                          />
-                        </div>
-
-                        {!currentRoomId || !multiRoom ? (
-                          <div className="flex flex-col gap-4">
-                            <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl text-left">
-                              <h4 className="text-xs font-extrabold text-slate-500 uppercase mb-2">
-                                🏠 <ruby>部屋を作る（ホスト）<rt>へやをつくる</rt></ruby>
-                              </h4>
-
-                              <div className="mb-3">
-                                <span className="text-[11px] font-bold text-slate-600 block mb-1">形式の選択:</span>
-                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-xs font-bold">
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedMultiQuizMode("touch")}
-                                    className={`py-1.5 px-2 rounded-lg border transition-all ${selectedMultiQuizMode === "touch" ? "bg-indigo-600 text-white border-indigo-700 shadow-xs" : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"}`}
-                                  >
-                                    タッチ
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => setSelectedMultiQuizMode("choices")}
-                                    className={`py-1.5 px-2 rounded-lg border transition-all ${selectedMultiQuizMode === "choices" ? "bg-indigo-600 text-white border-indigo-700 shadow-xs" : "bg-white text-slate-700 border-slate-200 hover:bg-slate-100"}`}
-                                  >
-                                    四択
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={!isSpecialtiesUnlocked}
-                                    onClick={() => setSelectedMultiQuizMode("specialties")}
-                                    className={`py-1.5 px-2 rounded-lg border transition-all ${selectedMultiQuizMode === "specialties" ? "bg-indigo-600 text-white border-indigo-700 shadow-xs" : isSpecialtiesUnlocked ? "bg-white text-slate-700 border-slate-200 hover:bg-slate-100" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
-                                  >
-                                    {isSpecialtiesUnlocked ? "有名なもの" : "🔒 有名なもの"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={!isCapitalUnlocked}
-                                    onClick={() => setSelectedMultiQuizMode("capital")}
-                                    className={`py-1.5 px-2 rounded-lg border transition-all ${selectedMultiQuizMode === "capital" ? "bg-indigo-600 text-white border-indigo-700 shadow-xs" : isCapitalUnlocked ? "bg-white text-slate-700 border-slate-200 hover:bg-slate-100" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
-                                  >
-                                    {isCapitalUnlocked ? "県庁(四択)" : "🔒 県庁(四択)"}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={!isCapitalInputUnlocked}
-                                    onClick={() => setSelectedMultiQuizMode("capitalInput")}
-                                    className={`py-1.5 px-2 rounded-lg border transition-all col-span-2 sm:col-span-1 ${selectedMultiQuizMode === "capitalInput" ? "bg-indigo-600 text-white border-indigo-700 shadow-xs" : isCapitalInputUnlocked ? "bg-white text-slate-700 border-slate-200 hover:bg-slate-100" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
-                                  >
-                                    {isCapitalInputUnlocked ? "県庁(入力)" : "🔒 県庁(入力)"}
-                                  </button>
-                                </div>
-                              </div>
-
-                              <div className="mb-3">
-                                <span className="text-[11px] font-bold text-slate-600 block mb-1">対象地域:</span>
-                                <select
-                                  value={selectedMultiRegionKey}
-                                  onChange={(e) => setSelectedMultiRegionKey(e.target.value)}
-                                  className="w-full py-2 px-3 rounded-xl border border-slate-300 font-bold text-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
-                                >
-                                  <option value="national">🎌 全国モード</option>
-                                  {Object.entries(REGION_GROUPS).map(([k, g]) => (
-                                    <option key={k} value={k}>🗺️ {g.name}</option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              {selectedMultiRegionKey === "national" && (
-                                <div className="mb-3">
-                                  <span className="text-[11px] font-bold text-slate-600 block mb-1">出題数:</span>
-                                  <div className="grid grid-cols-4 gap-1 text-xs font-bold">
-                                    {[10, 20, 30, 47].map((cnt) => {
-                                      const isUnlocked = cnt === 10 || (cnt === 20 && unlockedNationalCounts.c20) || (cnt === 30 && unlockedNationalCounts.c30) || (cnt === 47 && unlockedNationalCounts.c47);
-                                      return (
-                                        <button
-                                          key={cnt}
-                                          type="button"
-                                          disabled={!isUnlocked}
-                                          onClick={() => setSelectedMultiNationalCount(cnt)}
-                                          className={`py-1.5 rounded-lg border transition-all ${selectedMultiNationalCount === cnt ? "bg-indigo-600 text-white border-indigo-700" : isUnlocked ? "bg-white text-slate-700 border-slate-200 hover:bg-slate-100" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
-                                        >
-                                          {cnt}問
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              )}
-
-                              <button
-                                type="button"
-                                onClick={createRoom}
-                                className="w-full bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white font-extrabold py-2.5 px-4 rounded-xl shadow-md transition-all text-sm"
-                              >
-                                部屋を作成してコードを発行
-                              </button>
-                            </div>
-
-                            <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl text-left">
-                              <h4 className="text-xs font-extrabold text-slate-500 uppercase mb-2">
-                                🔑 <ruby>部屋に入る（ゲスト）<rt>へやにはいる</rt></ruby>
-                              </h4>
-                              <div className="flex gap-2">
-                                <input
-                                  type="text"
-                                  value={multiRoomCodeInput}
-                                  onChange={(e) => setMultiRoomCodeInput(e.target.value)}
-                                  placeholder="部屋コードを入力"
-                                  maxLength={8}
-                                  className="flex-1 py-2 px-3 rounded-xl border border-slate-300 font-mono font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => joinRoom(multiRoomCodeInput)}
-                                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-extrabold py-2 px-4 rounded-xl transition-all shadow-sm text-sm whitespace-nowrap"
-                                >
-                                  参加する
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl text-left flex flex-col gap-3">
-                            <div className="flex justify-between items-center bg-white p-3 rounded-xl border border-indigo-200 shadow-xs">
-                              <div>
-                                <span className="text-[10px] font-bold text-slate-400 uppercase block">部屋コード</span>
-                                <span className="font-mono font-black text-2xl text-indigo-600 tracking-wider">
-                                  {currentRoomId}
-                                </span>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  try {
-                                    document.execCommand('copy');
-                                    setMultiNotice("コードをコピーしました！");
-                                    setTimeout(() => setMultiNotice(""), 2000);
-                                  } catch (e) {}
-                                }}
-                                className="bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold py-1.5 px-3 rounded-lg transition-all"
-                              >
-                                📋 コピー
-                              </button>
-                            </div>
-
-                            <div className="bg-white p-3 rounded-xl border border-slate-200 text-xs space-y-1">
-                              <div className="flex justify-between">
-                                <span className="text-slate-500 font-bold">出題形式:</span>
-                                <span className="font-extrabold text-slate-800">
-                                  {multiRoom.selectedQuizMode === "touch" ? "タッチ" : multiRoom.selectedQuizMode === "choices" ? "四択" : multiRoom.selectedQuizMode === "specialties" ? "有名なもの" : multiRoom.selectedQuizMode === "capital" ? "県庁所在地(四択)" : "県庁所在地(入力)"}
-                                </span>
-                              </div>
-                              <div className="flex justify-between">
-                                <span className="text-slate-500 font-bold">対象地域:</span>
-                                <span className="font-extrabold text-slate-800">
-                                  {multiRoom.selectedRegionKey === "national" ? `全国 (${multiRoom.selectedNationalCount || 10}問)` : REGION_GROUPS[multiRoom.selectedRegionKey]?.name || "地方"}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div>
-                              <span className="text-xs font-extrabold text-slate-500 uppercase block mb-1.5">
-                                👥 参加プレイヤー ({Object.keys(multiRoom.players || {}).length}人)
-                              </span>
-                              <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
-                                {Object.values(multiRoom.players || {}).map((p) => (
-                                  <div key={p.id} className="flex justify-between items-center bg-white p-2.5 rounded-xl border border-slate-200 text-xs font-bold">
-                                    <span className="flex items-center gap-1.5">
-                                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                                      <span className="text-slate-800 font-extrabold">{p.nickname}</span>
-                                      {p.isHost && <span className="text-[9px] bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-black">👑 ホスト</span>}
-                                      {p.id === myUserId && <span className="text-[9px] bg-indigo-100 text-indigo-800 px-1.5 py-0.5 rounded font-bold">(自分)</span>}
-                                    </span>
-                                    <span className="text-emerald-600 font-extrabold text-[10px]">準備完了</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-
-                            {multiRoom.hostId === myUserId ? (
-                              <button
-                                type="button"
-                                onClick={handleHostStartGame}
-                                className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-600 hover:to-teal-700 text-white font-extrabold py-3 px-4 rounded-xl shadow-md transition-all text-sm animate-pulse mt-1"
-                              >
-                                🎮 ゲームスタート！
-                              </button>
-                            ) : (
-                              <div className="bg-indigo-50 border border-indigo-200 p-3 rounded-xl text-center text-xs text-indigo-700 font-bold animate-pulse mt-1">
-                                ⏳ ホストがゲームを開始するのを待っています...
-                              </div>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={leaveRoom}
-                              className="w-full bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 text-xs font-bold py-2 px-4 rounded-xl transition-all"
-                            >
-                              部屋を出る
-                            </button>
-                          </div>
-                        )}
-                      </div>
-
-                      <button 
-                        type="button"
-                        onClick={() => { setShowMultiplayer(false); setMultiNotice(""); }} 
-                        className="w-full max-w-xs mx-auto block bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-2.5 px-4 rounded-xl transition-all text-sm text-center border border-slate-200 mt-4"
-                      >
-                        🏠 ホームに<ruby>戻る<rt>もどる</rt></ruby>
-                      </button>
                     </div>
                   </div>
                 )}
@@ -2403,83 +1764,6 @@
               {quizFinished && (
                 <div className={`${isPractice ? "bg-amber-50 border-amber-200" : "bg-white border-slate-200"} border rounded-[2rem] p-6 shadow-md flex flex-col gap-4 animate-fade-in max-w-2xl mx-auto w-full`}>
                   
-                  {isMultiMode && multiRoom ? (
-                    <div className="bg-indigo-50/70 border-2 border-indigo-300 rounded-2xl p-4 text-center mb-2 flex flex-col gap-3">
-                      <h3 className="text-xl font-black text-indigo-900 flex justify-center items-center gap-2">
-                        <span>⚔️</span> <ruby>対戦結果<rt>たいせんけっか</rt></ruby>
-                      </h3>
-
-                      {!allMultiPlayersFinished ? (
-                        <div className="py-4 flex flex-col items-center justify-center gap-2 bg-white/80 rounded-xl p-4 border border-indigo-100">
-                          <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-                          <p className="text-base font-extrabold text-indigo-700 animate-pulse mt-1">
-                            ⏳ 他のプレイヤーが終了するのを待っています...
-                          </p>
-                          <p className="text-xs font-bold text-slate-500">
-                            全員が終了すると「勝敗・順位」が表示されます
-                          </p>
-                          <div className="bg-indigo-100 px-3 py-1 rounded-full text-xs font-black text-indigo-800 mt-1">
-                            終了状況: {Object.values(multiRoom.players || {}).filter(p => p.finished).length} / {Object.values(multiRoom.players || {}).length} 人
-                          </div>
-                        </div>
-                      ) : (
-                        <div>
-                          {sortedMultiPlayers.length === 2 ? (
-                            <div className="py-2">
-                              {(() => {
-                                const p1 = sortedMultiPlayers[0];
-                                const p2 = sortedMultiPlayers[1];
-                                const isDraw = (p1.correct === p2.correct && p1.time === p2.time && p1.score === p2.score);
-                                if (isDraw) {
-                                  return <div className="text-3xl font-black text-amber-600 animate-bounce">🤝 <ruby>ひきわけ<rt>ひきわけ</rt></ruby>！</div>;
-                                }
-                                if (myMultiRank === 1) {
-                                  return <div className="text-4xl font-black text-emerald-600 animate-bounce">🎉 <ruby>勝ち<rt>かち</rt></ruby>！</div>;
-                                }
-                                return <div className="text-3xl font-black text-rose-500">😢 <ruby>負け<rt>まけ</rt></ruby></div>;
-                              })()}
-                            </div>
-                          ) : (
-                            <div className="flex flex-col gap-2">
-                              <div className="bg-white p-3 rounded-xl border border-indigo-200">
-                                <span className="text-xs font-bold text-slate-500 block mb-1">あなたの順位</span>
-                                <span className="text-3xl font-black text-indigo-600">第 {myMultiRank} 位</span>
-                                <span className="text-xs font-bold text-slate-500 ml-1">/ 全 {sortedMultiPlayers.length} 人</span>
-                              </div>
-
-                              <div className="bg-white p-2.5 rounded-xl border border-indigo-200 text-left">
-                                <span className="text-[10px] font-extrabold text-slate-400 block mb-1">🏆 上位プレイヤー (TOP 3)</span>
-                                <div className="flex flex-col gap-1">
-                                  {sortedMultiPlayers.slice(0, 3).map((p, idx) => (
-                                    <div key={p.id} className="flex justify-between items-center text-xs font-bold bg-slate-50 px-2.5 py-1.5 rounded-lg">
-                                      <span className="flex items-center gap-1.5 truncate">
-                                        <span>{idx === 0 ? "🥇" : idx === 1 ? "🥈" : "🥉"}</span>
-                                        <span className="truncate">{p.nickname}</span>
-                                        {p.id === myUserId && <span className="text-[9px] text-rose-500 font-bold">(自分)</span>}
-                                      </span>
-                                      <span className="text-indigo-700 font-extrabold">{p.correct || 0}問正解 ({(() => { const sec = (p.time || 0) / 1000; return sec <= 10 ? `${sec.toFixed(1)}秒` : `${Math.round(sec)}秒`; })()})</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {multiRoom.hostId === myUserId ? (
-                            <button 
-                              onClick={handleHostRestartRoom} 
-                              className="w-full mt-3 bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold py-3 px-4 rounded-xl transition-all shadow-md text-sm text-center animate-pulse"
-                            >
-                              🔄 <ruby>もう1回対戦する<rt>もういっかいたいせんする</rt></ruby>
-                            </button>
-                          ) : (
-                            <p className="text-xs text-indigo-600 font-bold mt-2">オーナーの再スタート待ちです...</p>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ) : null}
-
                   <div className="text-center">
                     {selectedRegionKey && REGION_GROUPS[selectedRegionKey] ? <p className="text-lg sm:text-xl font-black text-slate-700">【<ruby>{REGION_GROUPS[selectedRegionKey].name}<rt>{REGION_GROUPS[selectedRegionKey].ruby}</rt></ruby>】<ruby>地方挑戦<rt>ちほうちょうせん</rt></ruby>お<ruby>疲<rt>つか</rt></ruby>れさまでした！</p> : <p className="text-lg sm:text-xl font-black text-slate-700">{maxQuestions}<ruby>問<rt>もん</rt></ruby>のチャレンジお<ruby>疲<rt>つか</rt></ruby>れさまでした！</p>}
                   </div>
