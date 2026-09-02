@@ -282,7 +282,7 @@
       10: { x: 32, y: 35, fontSize: "22px" },
       11: { x: 30, y: 18, fontSize: "20px" },
       12: { x: 25, y: 35, fontSize: "22px" },
-      13: { x: 24, y: 10, fontSize: "18px" },
+      13: { x: 24, y: 13, fontSize: "18px" },
       14: { x: 22, y: 18, fontSize: "18px" },
       15: { x: 60, y: 70, fontSize: "24px" },
       16: { x: 25, y: 22, fontSize: "20px" },
@@ -616,12 +616,20 @@
         );
       };
 
-      // 小さい都道府県も確実にタップできるようにする透明ヒットサークル
+      // 小さい都道府県も確実にタップできるようにする透明ヒットサークル（隣県を侵食しないサイズに調整）
       const renderHitArea = (code) => {
         const pos = LABEL_POSITIONS[code];
         if (!pos) return null;
-        const smallPrefs = [11, 13, 14, 16, 17, 18, 19, 25, 26, 27, 29, 30, 31, 36, 37, 41];
-        const r = smallPrefs.includes(parseInt(code, 10)) ? 26 : 16;
+        const c = parseInt(code, 10);
+        
+        // 面積の小さい県のみ、境界を超えて隣県を覆わない最適な半径を設定
+        let r = 0;
+        if (c === 13) r = 16; // 東京都（東京本土の中心を確実にカバー）
+        else if (c === 37) r = 14; // 香川県
+        else if (c === 27) r = 14; // 大阪府
+        else if (c === 41) r = 14; // 佐賀県
+        else return null; // 他の県はポリゴン自体が十分な面積を持つため補助円を置かず誤判定を完全防止
+
         return (
           <circle
             cx={pos.x}
@@ -1560,15 +1568,11 @@
                         {renderHitArea(15)}
                         {renderPrefectureLabel(15)}
                       </g>
+                      {}
                       <g onClick={() => handlePrefectureClick("14")} className={`kanagawa prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 14 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("14")} stroke={selectedCode === 14 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 14 ? "3.5" : "1.5"} transform="translate(584, 656)" style={{ display: isPrefectureVisible("14") ? "block" : "none" }}>
                         <polygon points="10 0 24 6 28 11 28 6 30 6 27 4 30 2 44 9 40 13 36 12 39 16 36 16 36 23 42 26 38 30 39 33 35 33 36 28 33 24 26 22 15 25 11 28 12 34 10 34 4 30 4 17 0 17 9 9"/>
                         {renderHitArea(14)}
                         {renderPrefectureLabel(14)}
-                      </g>
-                      <g onClick={() => handlePrefectureClick("13")} className={`tokyo prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 13 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("13")} stroke={selectedCode === 13 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 13 ? "3.5" : "1.5"} transform="translate(585, 642)" style={{ display: isPrefectureVisible("13") ? "block" : "none" }}>
-                        <path d="M49,173 L49,178 L44,171 L49,173 Z M34,113 L32,115 L29,114 L31,111 L34,113 Z M11,104 L13,106 L11,107 L11,104 Z M18,98 L16,96 L18,92 L18,98 Z M22,75 L22,69 L26,70 L26,76 L22,75 Z M48,7 L49,12 L47,16 L41,15 L43,19 L39,20 L43,20 L43,23 L29,16 L26,18 L29,20 L27,20 L27,25 L23,20 L9,14 L4,11 L0,3 L3,0 L18,4 L23,8 L30,5 L30,9 L36,6 L40,7 L42,5 L48,7 Z"/>
-                        {renderHitArea(13)}
-                        {renderPrefectureLabel(13)}
                       </g>
                       <g onClick={() => handlePrefectureClick("12")} className={`chiba prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 12 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("12")} stroke={selectedCode === 12 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 12 ? "3.5" : "1.5"} transform="translate(627, 629)" style={{ display: isPrefectureVisible("12") ? "block" : "none" }}>
                         <polygon points="5 29 7 25 6 20 6 13 0 0 8 10 19 15 37 11 37 8 55 20 55 24 45 24 34 35 32 57 19 61 7 75 0 71 5 69 3 66 4 63 3 58 5 53 1 49 4 45 7 46 7 42 13 39 18 33 11 26 6 30"/>
@@ -1579,6 +1583,11 @@
                         <polygon points="48 4 49 5 51 12 54 11 54 11 60 24 60 31 54 29 52 31 48 30 42 33 42 29 35 32 30 28 15 24 12 27 1 24 0 19 16 10 21 0 32 2 38 6"/>
                         {renderHitArea(11)}
                         {renderPrefectureLabel(11)}
+                      </g>
+                      <g onClick={() => handlePrefectureClick("13")} className={`tokyo prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 13 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("13")} stroke={selectedCode === 13 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 13 ? "3.5" : "1.5"} transform="translate(585, 642)" style={{ display: isPrefectureVisible("13") ? "block" : "none" }}>
+                        <path d="M49,173 L49,178 L44,171 L49,173 Z M34,113 L32,115 L29,114 L31,111 L34,113 Z M11,104 L13,106 L11,107 L11,104 Z M18,98 L16,96 L18,92 L18,98 Z M22,75 L22,69 L26,70 L26,76 L22,75 Z M48,7 L49,12 L47,16 L41,15 L43,19 L39,20 L43,20 L43,23 L29,16 L26,18 L29,20 L27,20 L27,25 L23,20 L9,14 L4,11 L0,3 L3,0 L18,4 L23,8 L30,5 L30,9 L36,6 L40,7 L42,5 L48,7 Z"/>
+                        {renderHitArea(13)}
+                        {renderPrefectureLabel(13)}
                       </g>
                       <g onClick={() => handlePrefectureClick("10")} className={`gunma prefecture ${quizActive && (quizMode === "choices" || quizMode === "specialties") && currentTarget && parseInt(currentTarget.code, 10) === 10 ? "animate-pulse" : ""}`} strokeLinejoin="round" fill={getPrefectureColor("10")} stroke={selectedCode === 10 ? "#ff4444" : "#000000"} strokeWidth={selectedCode === 10 ? "3.5" : "1.5"} transform="translate(557, 570)" style={{ display: isPrefectureVisible("10") ? "block" : "none" }}>
                         <polygon points="64 52 54 54 48 50 37 48 32 58 16 67 12 65 12 59 9 56 12 55 10 49 13 47 12 41 3 41 0 36 1 29 6 25 5 23 14 20 26 14 26 11 29 10 28 5 32 4 34 0 41 7 49 9 47 12 50 14 47 17 46 26 54 29 48 42 53 49 62 48"/>
