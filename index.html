@@ -1531,6 +1531,67 @@
                   </g>
                 </svg>
 
+                {/* 選択肢ボタン（四択・有名なもの・県庁所在地） */}
+                {quizActive && !quizFinished && (quizMode === "choices" || quizMode === "specialties" || quizMode === "capital") && (
+                  <div className="w-full mt-2 bg-slate-50 border border-slate-200 p-2.5 rounded-2xl z-10 animate-fade-in">
+                    <p className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 text-center tracking-wider"><ruby>選択肢<rt>せんたくし</rt></ruby>から選んでね！</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {currentChoices.map((choiceCode) => {
+                        const pref = PREFECTURE_DATA[choiceCode];
+                        const isSelectedChoice = selectedCode === choiceCode;
+                        const isCorrectSpecialtyInPractice = isPractice && quizMode === "specialties" && choiceCode === parseInt(currentTarget?.code, 10);
+                        
+                        let btnClass = "bg-red-500 hover:bg-red-600 text-white border-red-600 active:scale-95 shadow-md shadow-red-200";
+                        if (isSelectedChoice) {
+                          btnClass = "bg-red-700 text-white border-red-800 scale-95 shadow-inner";
+                        } else if (isCorrectSpecialtyInPractice) {
+                          btnClass = "bg-emerald-500 hover:bg-emerald-600 text-white border-emerald-600 active:scale-95 shadow-md shadow-emerald-200 ring-2 ring-emerald-300 font-black animate-pulse";
+                        }
+
+                        return (
+                          <button key={choiceCode} onClick={() => handleChoiceButtonClick(choiceCode)} disabled={!!quizFeedback} className={`py-2.5 px-3 rounded-xl font-extrabold text-sm sm:text-base border transition-all text-center ${btnClass}`}>
+                            {quizMode === "specialties" ? renderSpecialtiesList(pref?.specialties, false) : quizMode === "capital" ? <ruby>{pref?.capital}<rt>{pref?.capitalRuby}</rt></ruby> : <ruby>{pref?.name}<rt>{pref?.ruby}</rt></ruby>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* 県庁所在地 入力欄 */}
+                {quizActive && !quizFinished && quizMode === "capitalInput" && (
+                  <div className="w-full mt-2 bg-slate-50 border border-slate-200 p-2.5 rounded-2xl z-10 animate-fade-in">
+                    <p className="text-[10px] text-slate-400 font-bold uppercase mb-1.5 text-center tracking-wider">
+                      <ruby>県庁所在地名<rt>けんちょうしょざいちめい</rt></ruby>を<ruby>入力<rt>にゅうりょく</rt></ruby>してね！
+                    </p>
+                    <form 
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        handleInputSubmit();
+                      }}
+                      className="flex gap-2"
+                    >
+                      <input 
+                        type="text" 
+                        ref={inputRef}
+                        value={userInputValue}
+                        onChange={(e) => handleInputChange(e.target.value)}
+                        disabled={!!quizFeedback}
+                        placeholder="例：さっぽろし / 札幌市"
+                        className="flex-1 py-2.5 px-3 rounded-xl border border-slate-300 font-bold text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-50"
+                        autoFocus
+                      />
+                      <button 
+                        type="submit"
+                        disabled={!!quizFeedback || !userInputValue.trim()}
+                        className="py-2.5 px-5 rounded-xl font-extrabold text-sm bg-indigo-500 hover:bg-indigo-600 text-white border border-indigo-600 active:scale-95 shadow-md disabled:opacity-50 disabled:pointer-events-none"
+                      >
+                        <ruby>送信<rt>そうしん</rt></ruby>
+                      </button>
+                    </form>
+                  </div>
+                )}
+
                 {/* Home Page Menu Overlays */}
                 {!quizActive && !quizFinished && (
                   <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-4 text-center z-20 backdrop-blur-xs">
