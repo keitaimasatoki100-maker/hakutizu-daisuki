@@ -980,6 +980,29 @@
       ));
     };
 
+    // 「有名なもの」の選択肢：中の言葉の順番が1秒ごとに入れかわる
+    const ShufflingSpecialties = ({ items }) => {
+      const [order, setOrder] = useState(items);
+      useEffect(() => {
+        setOrder(items);
+        if (!items || items.length < 2) return undefined;
+        const timer = setInterval(() => {
+          setOrder(prev => {
+            const next = [...prev];
+            for (let i = next.length - 1; i > 0; i--) {
+              const j = Math.floor(Math.random() * (i + 1));
+              [next[i], next[j]] = [next[j], next[i]];
+            }
+            // 前と同じ並びになったときは、ずらして必ず入れかえる
+            if (next.every((x, i) => x === prev[i])) next.push(next.shift());
+            return next;
+          });
+        }, 1000);
+        return () => clearInterval(timer);
+      }, [items]);
+      return renderSpecialtiesList(order, false);
+    };
+
     // ふりがながあるときだけルビを付ける（地図データにはふりがなが無いため）
     const Rb = ({ k, r }) => (r ? <ruby>{k}<rt>{r}</rt></ruby> : <React.Fragment>{k}</React.Fragment>);
 
@@ -1088,6 +1111,20 @@
         tokyo23: { name: "23区", ruby: "にじゅうさんく", prefs: TOKYO_RAW.filter(r => r[3] === "tokyo23").map(r => r[0]), viewBox: "616 104 378 388" },
         tama: { name: "多摩", ruby: "たま", prefs: TOKYO_RAW.filter(r => r[3] === "tama").map(r => r[0]), viewBox: "6 6 670 509" }
       };
+      // 23区を3つのエリアに分けたもの（「23区」ボタンのあとに選べる）。hidden は、地方の一覧には出さない印
+      const TOKYO_AREAS = {
+        tokyoCore: { name: "都心・副都心", ruby: "としん・ふくとしん", parent: "tokyo23", names: ["千代田区", "中央区", "港区", "新宿区", "文京区", "渋谷区", "豊島区"], viewBox: "616 104 378 388" },
+        tokyoEast: { name: "23区東部", ruby: "にじゅうさんくとうぶ", parent: "tokyo23", names: ["台東区", "墨田区", "江東区", "荒川区", "足立区", "葛飾区", "江戸川区"], viewBox: "616 104 378 388" },
+        tokyoWest: { name: "23区西部", ruby: "にじゅうさんくせいぶ", parent: "tokyo23", names: ["品川区", "目黒区", "大田区", "世田谷区", "中野区", "杉並区", "練馬区", "板橋区", "北区"], viewBox: "616 104 378 388" },
+        tokyoNorthTama: { name: "北多摩", ruby: "きたたま", parent: "tama", names: ["立川市", "武蔵野市", "三鷹市", "府中市", "昭島市", "調布市", "小金井市", "小平市", "東村山市", "国分寺市", "国立市", "狛江市", "東大和市", "清瀬市", "東久留米市", "武蔵村山市", "西東京市"], viewBox: "6 6 670 509" },
+        tokyoSouthTama: { name: "南多摩", ruby: "みなみたま", parent: "tama", names: ["八王子市", "町田市", "日野市", "多摩市", "稲城市"], viewBox: "6 6 670 509" },
+        tokyoWestTama: { name: "西多摩", ruby: "にしたま", parent: "tama", names: ["青梅市", "福生市", "羽村市", "あきる野市", "瑞穂町", "日の出町", "檜原村", "奥多摩町"], viewBox: "6 6 670 509" },
+      };
+      Object.entries(TOKYO_AREAS).forEach(([key, a]) => {
+        groups[key] = { name: a.name, ruby: a.ruby, hidden: true, parent: a.parent, viewBox: a.viewBox, prefs: TOKYO_RAW.filter(r => a.names.indexOf(r[1]) >= 0).map(r => r[0]) };
+        // エリアを選んでも、その地域（23区／多摩）ぜんぶの地図を表示する（出題されないところはうすいグレー）
+        groups[key].visiblePrefs = groups[a.parent].prefs;
+      });
       return { data, shapes, labels, groups, viewBox: "10 10 980 501" };
     })();
     let JAPAN_SNAPSHOT = null;
@@ -1165,9 +1202,14 @@
       });
       const catKeyRef = useRef(null);      // いま挑戦中のカテゴリ（記録しないときは null）
       const skipCatRef = useRef(false);    // おすすめモードなどは記録しない
+      const replayRef = useRef(false);     // 「同じ問題にチャレンジ」中は、どの記録も残さない
+      const [isReplay, setIsReplay] = useState(false);
+      const lastStartRef = useRef(null);   // 直前の挑戦を始めたときの条件（「同じ条件でもう一度」用）
+      const lastQueueRef = useRef([]);     // 直前の挑戦で出題した問題の並び
       const maxComboRef = useRef(0);
       const [selectedCode, setSelectedCode] = useState(null);
       const [showRegionSelect, setShowRegionSelect] = useState(false);
+      const [tokyoCountKey, setTokyoCountKey] = useState(null); // 東京都：問題数を選んでいる地域（"tokyo23" か "tama"）
       const [showPracticeSelect, setShowPracticeSelect] = useState(false);
       const [showNationalSelect, setShowNationalSelect] = useState(false);
       const [selectedRegionKey, setSelectedRegionKey] = useState(null);
@@ -1324,7 +1366,13 @@
       const isPrefectureVisible = (code) => {
         const activeKey = rouletteKey || activeZoomRegionKey;
         if (!activeKey || !REGION_GROUPS[activeKey]) { return true; }
-        return REGION_GROUPS[activeKey].prefs.includes(parseInt(code, 10));
+        return (REGION_GROUPS[activeKey].visiblePrefs || REGION_GROUPS[activeKey].prefs).includes(parseInt(code, 10));
+      };
+
+      // 出題されない市町村（多摩のエリアを選んだとき）かどうか
+      const isOutOfScope = (code) => {
+        const g = REGION_GROUPS[rouletteKey || activeZoomRegionKey];
+        return !!(g && g.visiblePrefs && !g.prefs.includes(parseInt(code, 10)));
       };
 
       const showBoundaryLine = useMemo(() => {
@@ -1345,6 +1393,7 @@
       const getPrefectureColor = (code) => {
         const pref = PREFECTURE_DATA[code];
         if (!pref) return "#f8fafc";
+        if (quizActive && isOutOfScope(code)) return "#e5e7eb"; // 出題されないところはうすいグレー
         if (isRouletteActive && rouletteKey) {
           if (REGION_GROUPS[rouletteKey].prefs.includes(parseInt(code, 10))) { return REGION_COLORS[pref.region].fill; }
           return "#f1f5f9";
@@ -1356,6 +1405,8 @@
           return "#fbbf24"; 
         }
         if (!quizActive) { return REGION_COLORS[pref.region].fill; }
+        // 場所クイズでは、陸地と海が見分けやすいように陸地にうすく色をつける
+        if (quizMode === "places" && quizDifficulty === "normal") { return "#dcefd0"; }
         if (quizDifficulty === "normal") { return "#f8fafc"; }
         return REGION_COLORS[pref.region].fill;
       };
@@ -1423,7 +1474,7 @@
         return (
           <g
             key={c}
-            onClick={() => handlePrefectureClick(String(c))}
+            onClick={() => { if (quizActive && isOutOfScope(c)) return; handlePrefectureClick(String(c)); }}
             className={`${shape.cls} prefecture ${isTarget ? "animate-pulse" : ""}`}
             strokeLinejoin="round"
             fill={getPrefectureColor(String(c))}
@@ -1454,6 +1505,7 @@
 
       const updatePrefStats = (code, isCorrect) => {
         if (quizFeedback) return;
+        if (replayRef.current) return; // 同じ問題にチャレンジ中は記録しない
         setPrefStats(prev => {
           const current = prev[code] || { asked: 0, correct: 0 };
           const updated = {
@@ -1489,6 +1541,7 @@
         setSelectedCode(null);
         setSelectedRegionKey(null);
         setShowRegionSelect(false);
+        setTokyoCountKey(null);
         setShowPracticeSelect(false);
         setShowNationalSelect(false);
         setQuizRecommendedActive(false);
@@ -1658,7 +1711,7 @@
           }
           // 場所クイズは、地方・全国モードの記録やロック解除には数えない
           const isPlacesQuiz = quizMode === "places" || ACTIVE_MAP_SET === "tokyo";
-          setTotalScore(prevTotal => {
+          if (!replayRef.current) setTotalScore(prevTotal => {
             const newTotalScore = prevTotal + gainedScore;
             safeSetLocalStorage("japan_map_quiz_total_score", newTotalScore.toString());
             return newTotalScore;
@@ -1669,7 +1722,7 @@
             : selectedRegionKey && REGION_GROUPS[selectedRegionKey] ? (ACTIVE_MAP_SET === "tokyo" ? `東京都 ${REGION_GROUPS[selectedRegionKey].name}` : `${REGION_GROUPS[selectedRegionKey].name}地方`)
             : (ACTIVE_MAP_SET === "tokyo" ? `東京都${maxQuestions}問` : `全国${maxQuestions}問`);
 
-          updateUserGroupStats(gainedScore, courseName);
+          if (!replayRef.current) updateUserGroupStats(gainedScore, courseName);
 
           let isNewScore = false; 
           let updatedBestScore = bestScore; 
@@ -1731,7 +1784,7 @@
 
           setNewRecords({ score: isNewScore, correct: isNewCorrect, combo: isNewCombo, time: isNewTime });
 
-          if (isPerfect100 || isNewScore || isNewCorrect || isNewCombo || isNewTime) {
+          if (!replayRef.current && (isPerfect100 || isNewScore || isNewCorrect || isNewCombo || isNewTime)) {
             setShowKusudama(true);
             setIsKusudamaOpen(false);
             setKusudamaFadeOut(false);
@@ -1752,11 +1805,12 @@
         }
       };
 
-      const startQuiz = (difficulty = "easy", regionKey = null, count = null, customQueue = null, practiceMode = false) => {
+      const startQuiz = (difficulty = "easy", regionKey = null, count = null, customQueue = null, practiceMode = false, replay = false) => {
         setIsPractice(practiceMode);
         setQuizDifficulty(difficulty);
         setSelectedRegionKey(regionKey);
         setShowRegionSelect(false);
+        setTokyoCountKey(null);
         setShowPracticeSelect(false);
         setShowNationalSelect(false);
         setQuizFinished(false);
@@ -1771,6 +1825,7 @@
           } else {
             const codes = [...REGION_GROUPS[regionKey].prefs];
             queue = codes.sort(() => Math.random() - 0.5);
+            if (count && count < queue.length) queue = queue.slice(0, count);
           }
         } else {
           const targetCount = count || 10;
@@ -1783,8 +1838,23 @@
         }
 
         // この挑戦がどのカテゴリの記録になるか決める（練習・おすすめは記録しない）
+        replayRef.current = replay;
+        setIsReplay(replay);
+        if (!replay) {
+          // 「同じ条件でもう一度遊ぶ」で再現できるように、この挑戦の条件をおぼえておく
+          let placeCat = null;
+          const placeRebuild = quizMode === "places" && !regionKey && !!customQueue && !skipCatRef.current && queue.length > 0;
+          if (placeRebuild) {
+            const cats = new Set(queue.map(id => PLACES[id - PLACE_ID_BASE].category));
+            const only = cats.size === 1 ? Array.from(cats)[0] : null;
+            const sizeOfCat = only ? new Set(PLACES.filter(p => p.category === only).map(p => p.name)).size : 0;
+            placeCat = only && queue.length === sizeOfCat ? only : null;
+          }
+          lastStartRef.current = { difficulty, regionKey, count, practiceMode, recommended: skipCatRef.current, placeRebuild, placeCat };
+        }
+        if (!replay) lastQueueRef.current = [...queue];
         let catKey = null;
-        if (!practiceMode && !skipCatRef.current && queue.length > 0) {
+        if (!practiceMode && !skipCatRef.current && !replay && queue.length > 0) {
           if (quizMode === "places") {
             if (regionKey) {
               catKey = "places:region:" + regionKey;
@@ -1794,6 +1864,8 @@
               const sizeOfCat = only ? new Set(PLACES.filter(p => p.category === only).map(p => p.name)).size : 0;
               catKey = only && queue.length === sizeOfCat ? "places:" + only : "places:all";
             }
+          } else if (regionKey && ACTIVE_MAP_SET === "tokyo") {
+            catKey = "tokyo:" + regionKey + ":" + queue.length; // 東京都は問題数ごとに記録
           } else if (regionKey) {
             catKey = ACTIVE_MAP_SET + ":" + regionKey;
           } else {
@@ -1902,7 +1974,7 @@
         setIsRouletteActive(true);
         setFinalSelectedKey(null);
 
-        const keys = Object.keys(REGION_GROUPS);
+        const keys = Object.keys(REGION_GROUPS).filter(k => !REGION_GROUPS[k].hidden);
         let counter = 0;
         const interval = setInterval(() => {
           setRouletteKey(keys[counter % keys.length]);
@@ -1921,6 +1993,19 @@
             startQuiz("easy", chosenKey, null, null, false);
           }, 1000);
         }, 2200);
+      };
+
+      // 「同じ条件でもう一度遊ぶ」：直前の挑戦と同じ条件（モード・地方・問題数・項目・練習など）で始める
+      const retryQuiz = () => {
+        const L = lastStartRef.current;
+        if (!L) { startQuiz(quizDifficulty, selectedRegionKey, maxQuestions, quizQueue.length ? quizQueue : null); return; }
+        if (L.recommended) { startRecommendedQuiz(); return; }
+        if (L.placeRebuild) {
+          const q = buildPlaceQueue(null, null, L.placeCat);
+          startQuiz(L.difficulty, null, q.length, q, L.practiceMode);
+          return;
+        }
+        startQuiz(L.difficulty, L.regionKey, L.count, null, L.practiceMode);
       };
 
       const startRecommendedQuiz = () => {
@@ -2374,7 +2459,7 @@
 
                         return (
                           <button key={choiceCode} onClick={() => handleChoiceButtonClick(choiceCode)} disabled={!!quizFeedback} className={`py-2.5 px-3 rounded-xl font-extrabold text-sm sm:text-base border transition-all text-center ${btnClass}`}>
-                            {quizMode === "specialties" ? renderSpecialtiesList(pref?.specialties, false) : quizMode === "capital" ? <Rb k={pref?.capital} r={pref?.capitalRuby} /> : <Rb k={pref?.name} r={pref?.ruby} />}
+                            {quizMode === "specialties" ? <ShufflingSpecialties items={pref?.specialties} /> : quizMode === "capital" ? <Rb k={pref?.capital} r={pref?.capitalRuby} /> : <Rb k={pref?.name} r={pref?.ruby} />}
                           </button>
                         );
                       })}
@@ -2421,6 +2506,43 @@
                   <div className="absolute inset-0 bg-slate-900/40 flex items-center justify-center p-4 text-center z-20 backdrop-blur-xs">
                     <div className="bg-white border border-slate-200 p-6 rounded-[2rem] max-w-xl w-full shadow-xl animate-fade-in max-h-[92vh] overflow-y-auto my-auto">
                       {(() => {
+                        if (tokyoCountKey && mapSet === "tokyo" && REGION_GROUPS[tokyoCountKey]) {
+                          const grp = REGION_GROUPS[tokyoCountKey];
+                          const counts = tokyoCountKey === "tokyo23" ? [10, 23] : [10, 20, 30];
+                          return (
+                            <div>
+                              <h3 className="text-xl sm:text-2xl font-black text-slate-800 mb-2 flex justify-center items-center gap-2">
+                                <span>🗼</span> <ruby>{grp.name}<rt>{grp.ruby}</rt></ruby>の<ruby>出題数<rt>しゅつだいすう</rt></ruby>を<ruby>選<rt>えら</rt></ruby>んでね！
+                              </h3>
+                              {(tokyoCountKey === "tokyo23" || tokyoCountKey === "tama") && (
+                                <div className="mt-4">
+                                  <p className="text-xs font-black text-slate-500 mb-2">エリアで<ruby>選<rt>えら</rt></ruby>ぶ</p>
+                                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    {Object.entries(REGION_GROUPS).filter(([, g]) => g.hidden && g.parent === tokyoCountKey).map(([ak, ag]) => (
+                                      <button key={ak} onClick={() => startQuiz("easy", ak, null, null, false)} className="bg-orange-400 hover:bg-orange-500 text-white font-black py-3 px-2 rounded-xl text-base transition-all text-center hover:-translate-y-0.5 shadow-md">
+                                        <ruby>{ag.name}<rt>{ag.ruby}</rt></ruby>
+                                        <div className="text-[10px] font-bold opacity-90">{ag.prefs.length}<ruby>問<rt>もん</rt></ruby></div>
+                                        {bestLine("tokyo:" + ak + ":" + ag.prefs.length)}
+                                      </button>
+                                    ))}
+                                  </div>
+                                  <p className="text-xs font-black text-slate-500 mt-5 -mb-3"><ruby>問題数<rt>もんだいすう</rt></ruby>で<ruby>選<rt>えら</rt></ruby>ぶ</p>
+                                </div>
+                              )}
+                              <div className={`grid gap-4 my-6 ${counts.length === 3 ? "grid-cols-3" : "grid-cols-2"}`}>
+                                {counts.map(n => (
+                                  <button key={n} onClick={() => startQuiz("easy", tokyoCountKey, n, null, false)} className="bg-rose-500 hover:bg-rose-600 text-white font-black py-4 px-2 rounded-xl text-lg transition-all text-center hover:-translate-y-0.5 shadow-md">
+                                    {n}<ruby>問<rt>もん</rt></ruby>{n === grp.prefs.length ? <div className="text-[10px] font-bold opacity-90">（<ruby>全問<rt>ぜんもん</rt></ruby>）</div> : null}
+                                    {bestLine("tokyo:" + tokyoCountKey + ":" + n)}
+                                  </button>
+                                ))}
+                              </div>
+                              <button onClick={() => { setTokyoCountKey(null); setShowRegionSelect(true); }} className="w-full max-w-xs mx-auto block bg-rose-50 hover:bg-rose-100 text-rose-700 font-extrabold py-3 px-4 rounded-xl transition-all text-sm sm:text-base text-center border border-rose-100 active:scale-95">
+                                🔙 <ruby>戻る<rt>もどる</rt></ruby>
+                              </button>
+                            </div>
+                          );
+                        }
                         if (showRegionSelect) {
                           return (
                             <div>
@@ -2431,14 +2553,14 @@
                                 <button disabled={isRouletteActive} onClick={() => { setShowRegionSelect(false); setShowPracticeSelect(true); }} className={`col-span-1 sm:col-span-2 bg-sky-500 hover:bg-sky-600 text-white border border-sky-600 font-black py-3 px-4 rounded-xl transition-all text-base text-center shadow-sm ${isRouletteActive ? "opacity-50 cursor-not-allowed" : "hover:-translate-y-0.5"}`}>
                                   🔰 練習（れんしゅう）
                                 </button>
-                                {Object.entries(REGION_GROUPS).map(([key, group]) => {
+                                {Object.entries(REGION_GROUPS).filter(([, g]) => !g.hidden).map(([key, group]) => {
                                   const isHighlighted = rouletteKey === key; const isFinal = finalSelectedKey === key;
                                   let btnClass = `btn-region-${key} border border-transparent`;
                                   if (isHighlighted) { btnClass = "bg-yellow-300 text-yellow-950 border-yellow-400 scale-105 shadow-md shadow-yellow-200/50"; }
                                   if (isFinal) { btnClass = "bg-amber-400 text-slate-900 border-amber-500 scale-110 shadow-lg shadow-amber-300 ring-4 ring-amber-300 ring-offset-2 animate-bounce"; }
                                   return (
-                                    <button key={key} disabled={isRouletteActive} onClick={() => startQuiz("easy", key, null, null, false)} className={`${btnClass} font-extrabold py-3.5 px-4 rounded-xl transition-all text-sm sm:text-base text-center`}>
-                                      <ruby>{group.name}<rt>{group.ruby}</rt></ruby>{bestLine(regionCatKey(key))}
+                                    <button key={key} disabled={isRouletteActive} onClick={() => { if (mapSet === "tokyo") { setShowRegionSelect(false); setTokyoCountKey(key); } else { startQuiz("easy", key, null, null, false); } }} className={`${btnClass} font-extrabold py-3.5 px-4 rounded-xl transition-all text-sm sm:text-base text-center`}>
+                                      <ruby>{group.name}<rt>{group.ruby}</rt></ruby>{mapSet === "tokyo" ? null : bestLine(regionCatKey(key))}
                                     </button>
                                   );
                                 })}
@@ -2460,7 +2582,7 @@
                                 <span>🔰</span> <ruby>練習<rt>れんしゅう</rt></ruby>する<ruby>地方<rt>ちほう</rt></ruby>を<ruby>選<rt>えら</rt></ruby>んでね！
                               </h3>
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
-                                {Object.entries(REGION_GROUPS).map(([key, group]) => {
+                                {Object.entries(REGION_GROUPS).filter(([, g]) => !g.hidden).map(([key, group]) => {
                                   const btnClass = `btn-region-${key} border border-transparent`;
                                   return (
                                     <button key={key} onClick={() => { setShowPracticeSelect(false); startQuiz("easy", key, null, null, true); }} className={`${btnClass} font-extrabold py-3.5 px-4 rounded-xl transition-all text-sm sm:text-base text-center hover:-translate-y-0.5 shadow-sm`}>
@@ -2655,6 +2777,19 @@
                               </div>
 
                               <button onClick={startRecommendedQuiz} className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-extrabold py-2.5 px-4 rounded-xl transition-all shadow-md text-sm sm:text-base hover:-translate-y-0.5">🔥 おすすめ（<ruby>弱点克服<rt>じゃくてんこくふく</rt></ruby>）モード</button>
+
+                              {mapSet === "tokyo" && (
+                                <a href="https://claude.ai/artifact/QrY5BjXx2QSfmDVQvstfUz" target="_blank" rel="noopener noreferrer" className="w-full block bg-white hover:bg-orange-50 text-orange-700 border-2 border-orange-300 font-extrabold py-2.5 px-4 rounded-xl transition-all shadow-sm text-sm sm:text-base text-center hover:-translate-y-0.5">
+                                  📖 <ruby>東京<rt>とうきょう</rt></ruby>23<ruby>区<rt>く</rt></ruby> おぼえる<ruby>地図<rt>ちず</rt></ruby>を<ruby>見<rt>み</rt></ruby>る
+                                  <div className="text-[10px] font-bold opacity-80"><ruby>新<rt>あたら</rt></ruby>しいタブで<ruby>開<rt>ひら</rt></ruby>きます</div>
+                                </a>
+                              )}
+                              {mapSet === "tokyo" && (
+                                <a href="https://claude.ai/artifact/R4Ud8XDXDcc3kEf4Q7cnh3" target="_blank" rel="noopener noreferrer" className="w-full block bg-white hover:bg-green-50 text-green-700 border-2 border-green-300 font-extrabold py-2.5 px-4 rounded-xl transition-all shadow-sm text-sm sm:text-base text-center hover:-translate-y-0.5">
+                                  📖 <ruby>東京<rt>とうきょう</rt></ruby><ruby>多摩<rt>たま</rt></ruby><ruby>地区<rt>ちく</rt></ruby> おぼえる<ruby>地図<rt>ちず</rt></ruby>を<ruby>見<rt>み</rt></ruby>る
+                                  <div className="text-[10px] font-bold opacity-80"><ruby>新<rt>あたら</rt></ruby>しいタブで<ruby>開<rt>ひら</rt></ruby>きます</div>
+                                </a>
+                              )}
                             </div>
                           </div>
                         );
@@ -2760,8 +2895,14 @@
                   </div>
 
                   <div className="flex flex-col gap-2 mt-1">
+                    {!isMultiMode && mapSet === "tokyo" && lastQueueRef.current.length > 0 && (
+                      <button onClick={() => startQuiz(quizDifficulty, selectedRegionKey, maxQuestions, lastQueueRef.current, isPractice, true)} className="w-full bg-amber-500 hover:bg-amber-600 text-white font-extrabold py-3 px-5 rounded-xl transition-all shadow-md text-sm text-center">🔁 <ruby>同<rt>おな</rt></ruby>じ<ruby>問題<rt>もんだい</rt></ruby>にチャレンジ
+                        <div className="text-[10px] font-bold opacity-90"><ruby>記録<rt>きろく</rt></ruby>には<ruby>残<rt>のこ</rt></ruby>りません</div>
+                      </button>
+                    )}
+                    {isReplay && <p className="text-[11px] font-bold text-amber-600 text-center">※この<ruby>挑戦<rt>ちょうせん</rt></ruby>は<ruby>記録<rt>きろく</rt></ruby>に<ruby>残<rt>のこ</rt></ruby>っていません</p>}
                     {!isMultiMode && (
-                      <button onClick={() => startQuiz(quizDifficulty, selectedRegionKey, maxQuestions, quizQueue.length ? quizQueue : null)} className="w-full bg-rose-500 hover:bg-rose-600 text-white font-extrabold py-3 px-5 rounded-xl transition-all shadow-md text-sm text-center">🔄 <ruby>同<rt>おな</rt></ruby>じ<ruby>条件<rt>じょうけん</rt></ruby>でもう<ruby>一度遊<rt>いちどあそ</rt></ruby>ぶ</button>
+                      <button onClick={retryQuiz} className="w-full bg-rose-500 hover:bg-rose-600 text-white font-extrabold py-3 px-5 rounded-xl transition-all shadow-md text-sm text-center">🔄 <ruby>同<rt>おな</rt></ruby>じ<ruby>条件<rt>じょうけん</rt></ruby>でもう<ruby>一度遊<rt>いちどあそ</rt></ruby>ぶ</button>
                     )}
                     <button onClick={() => { setQuizFinished(false); setSelectedRegionKey(null); }} className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-extrabold py-3 px-5 rounded-xl transition-all text-sm text-center border border-slate-200">🏠 ホームに戻る</button>
                   </div>
